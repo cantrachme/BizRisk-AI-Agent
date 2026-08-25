@@ -102,7 +102,7 @@ def test_loop_count_limit_is_enforced():
     # Run the graph; edge routing must trigger __end__ and node must cap it
     output_state = graph_app.invoke(state)
 
-    assert output_state["planner_loop_count"] == 4
+    assert output_state["planner_loop_count"] == 3
     assert output_state["status"] == "MAX_LOOPS_REACHED"
     assert len(output_state["pending_tasks"]) == 0
 

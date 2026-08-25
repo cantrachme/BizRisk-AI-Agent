@@ -32,3 +32,5 @@ class InvestigationState(TypedDict):
     results: List[ResearchResult]
     planner_loop_count: int
     status: str
+
+MAX_PLANNER_LOOPS = 3

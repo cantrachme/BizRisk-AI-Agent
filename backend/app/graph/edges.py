@@ -1,4 +1,4 @@
-from app.graph.state import InvestigationState
+from app.graph.state import InvestigationState, MAX_PLANNER_LOOPS
 
 def should_continue(state: InvestigationState) -> str:
     """
@@ -9,8 +9,8 @@ def should_continue(state: InvestigationState) -> str:
     """
     loop_count = state.get("planner_loop_count", 0)
     
-    # Cap strictly at 3 loops
-    if loop_count >= 3:
+    # Cap strictly at MAX_PLANNER_LOOPS
+    if loop_count >= MAX_PLANNER_LOOPS:
         return "__end__"
         
     # If no pending tasks are returned, exit
