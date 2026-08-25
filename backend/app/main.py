@@ -1,10 +1,14 @@
 from fastapi import FastAPI
 
+from app.core.config import get_settings
+
+
+settings = get_settings()
 
 app = FastAPI(
-    title="BizRisk AI Agent",
+    title=settings.app_name,
     description="AI-powered business due diligence and risk assessment platform.",
-    version="0.1.0",
+    version=settings.app_version,
 )
 
 
@@ -15,4 +19,7 @@ def root() -> dict[str, str]:
 
 @app.get("/health")
 def health_check() -> dict[str, str]:
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "environment": settings.environment,
+    }

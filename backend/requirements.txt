@@ -3,3 +3,7 @@ uvicorn[standard]
 langgraph
 pydantic
 pytest
+pydantic-settings
+SQLAlchemy
+psycopg[binary]
+alembic
