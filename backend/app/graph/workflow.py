@@ -10,6 +10,7 @@ from app.graph.nodes import (
     entity_resolution_node,
     intake_node,
     planner_node,
+    risk_analysis_node,
 )
 from app.graph.state import InvestigationState
 
@@ -21,6 +22,7 @@ workflow.add_node("discovery", discovery_node)
 workflow.add_node("planner", planner_node)
 workflow.add_node("browser", browser_node)
 workflow.add_node("entity_resolution", entity_resolution_node)
+workflow.add_node("risk_analysis", risk_analysis_node)
 
 workflow.set_entry_point("intake")
 
@@ -32,7 +34,7 @@ workflow.add_conditional_edges(
     should_continue,
     {
         "browser": "browser",
-        "__end__": END,
+        "__end__": "risk_analysis",
     },
 )
 
@@ -43,8 +45,10 @@ workflow.add_conditional_edges(
     should_continue_after_resolution,
     {
         "planner": "planner",
-        "__end__": END,
+        "__end__": "risk_analysis",
     },
 )
+
+workflow.add_edge("risk_analysis", END)
 
 app = workflow.compile()

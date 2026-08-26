@@ -34,3 +34,8 @@ class Investigation(Base):
         back_populates="investigation",
         cascade="all, delete-orphan",
     )
+
+    risk_signals: Mapped[List["RiskSignal"]] = relationship(
+        back_populates="investigation",
+        cascade="all, delete-orphan",
+    )

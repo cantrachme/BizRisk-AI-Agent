@@ -1,0 +1,44 @@
+rules:
+  GST_INACTIVE:
+    weight: 30
+    category: "COMPLIANCE"
+    severity: "HIGH"
+    description: "GST registration appears inactive."
+
+  LEGAL_NAME_CONFLICT:
+    weight: 25
+    category: "IDENTITY"
+    severity: "HIGH"
+    description: "Legal name conflicts across sources."
+
+  ADDRESS_MAJOR_MISMATCH:
+    weight: 10
+    category: "CONSISTENCY"
+    severity: "MEDIUM"
+    description: "Registered addresses differ across sources."
+
+  BUSINESS_ACTIVITY_MISMATCH:
+    weight: 10
+    category: "CONSISTENCY"
+    severity: "MEDIUM"
+    description: "Business activities differ across sources."
+
+  VERY_RECENT_REGISTRATION:
+    weight: 5
+    category: "REGISTRATION"
+    severity: "LOW"
+    description: "Business registration is very recent (less than 1 year)."
+
+risk_levels:
+  low:
+    min: 0
+    max: 30
+  moderate:
+    min: 31
+    max: 60
+  high:
+    min: 61
+    max: 80
+  very_high:
+    min: 81
+    max: 100
