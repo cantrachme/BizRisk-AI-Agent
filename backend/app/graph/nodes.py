@@ -94,8 +94,33 @@ def intake_node(state: InvestigationState) -> dict:
             "status": "NORMALIZED",
         }
     except Exception as e:
-        log_node_event(investigation_id, "NODE_FAILED", "intake", "FAILED", {"error": str(e)})
-        log_node_event(investigation_id, "INVESTIGATION_FAILED", "intake", "FAILED", {"error": str(e)})
+        log_node_event(
+            investigation_id,
+            "NODE_FAILED",
+            "intake",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "retryable": False
+            }
+        )
+        log_node_event(
+            investigation_id,
+            "INVESTIGATION_FAILED",
+            "intake",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e)
+            }
+        )
+        update_investigation_in_db(
+            state.get("investigation_id"),
+            "intake",
+            status="FAILED",
+            completed=True
+        )
         raise
 
 
@@ -155,8 +180,33 @@ def discovery_node(state: InvestigationState) -> dict:
             "status": "DISCOVERY_COMPLETED",
         }
     except Exception as e:
-        log_node_event(investigation_id, "NODE_FAILED", "discovery", "FAILED", {"error": str(e)})
-        log_node_event(investigation_id, "INVESTIGATION_FAILED", "discovery", "FAILED", {"error": str(e)})
+        log_node_event(
+            investigation_id,
+            "NODE_FAILED",
+            "discovery",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "retryable": False
+            }
+        )
+        log_node_event(
+            investigation_id,
+            "INVESTIGATION_FAILED",
+            "discovery",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e)
+            }
+        )
+        update_investigation_in_db(
+            investigation_id_str,
+            "discovery",
+            status="FAILED",
+            completed=True
+        )
         raise
 
 
@@ -203,8 +253,33 @@ def planner_node(state: InvestigationState) -> dict:
             "status": status,
         }
     except Exception as e:
-        log_node_event(investigation_id, "NODE_FAILED", "planner", "FAILED", {"error": str(e)})
-        log_node_event(investigation_id, "INVESTIGATION_FAILED", "planner", "FAILED", {"error": str(e)})
+        log_node_event(
+            investigation_id,
+            "NODE_FAILED",
+            "planner",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "retryable": False
+            }
+        )
+        log_node_event(
+            investigation_id,
+            "INVESTIGATION_FAILED",
+            "planner",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e)
+            }
+        )
+        update_investigation_in_db(
+            state.get("investigation_id"),
+            "planner",
+            status="FAILED",
+            completed=True
+        )
         raise
 
 
@@ -268,8 +343,33 @@ def browser_node(state: InvestigationState) -> dict:
             "status": "RESEARCH_COMPLETED",
         }
     except Exception as e:
-        log_node_event(investigation_id, "NODE_FAILED", "browser_research", "FAILED", {"error": str(e)})
-        log_node_event(investigation_id, "INVESTIGATION_FAILED", "browser_research", "FAILED", {"error": str(e)})
+        log_node_event(
+            investigation_id,
+            "NODE_FAILED",
+            "browser_research",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "retryable": False
+            }
+        )
+        log_node_event(
+            investigation_id,
+            "INVESTIGATION_FAILED",
+            "browser_research",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e)
+            }
+        )
+        update_investigation_in_db(
+            investigation_id_str,
+            "browser",
+            status="FAILED",
+            completed=True
+        )
         raise
 
 
@@ -333,8 +433,33 @@ def entity_resolution_node(state: InvestigationState) -> dict:
             "status": "ENTITY_UNRESOLVED",
         }
     except Exception as e:
-        log_node_event(investigation_id, "NODE_FAILED", "entity_resolution", "FAILED", {"error": str(e)})
-        log_node_event(investigation_id, "INVESTIGATION_FAILED", "entity_resolution", "FAILED", {"error": str(e)})
+        log_node_event(
+            investigation_id,
+            "NODE_FAILED",
+            "entity_resolution",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "retryable": False
+            }
+        )
+        log_node_event(
+            investigation_id,
+            "INVESTIGATION_FAILED",
+            "entity_resolution",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e)
+            }
+        )
+        update_investigation_in_db(
+            state.get("investigation_id"),
+            "entity_resolution",
+            status="FAILED",
+            completed=True
+        )
         raise
 
 
@@ -376,8 +501,33 @@ def risk_analysis_node(state: InvestigationState) -> dict:
             "risk_signals": analysis["risk_signals"],
         }
     except Exception as e:
-        log_node_event(investigation_id, "NODE_FAILED", "risk_analysis", "FAILED", {"error": str(e)})
-        log_node_event(investigation_id, "INVESTIGATION_FAILED", "risk_analysis", "FAILED", {"error": str(e)})
+        log_node_event(
+            investigation_id,
+            "NODE_FAILED",
+            "risk_analysis",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "retryable": False
+            }
+        )
+        log_node_event(
+            investigation_id,
+            "INVESTIGATION_FAILED",
+            "risk_analysis",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e)
+            }
+        )
+        update_investigation_in_db(
+            investigation_id_str,
+            "risk_analysis",
+            status="FAILED",
+            completed=True
+        )
         raise
 
 
@@ -454,8 +604,33 @@ def report_generation_node(state: InvestigationState) -> dict:
             "report": report,
         }
     except Exception as e:
-        log_node_event(investigation_id, "NODE_FAILED", "report_generation", "FAILED", {"error": str(e)})
-        log_node_event(investigation_id, "INVESTIGATION_FAILED", "report_generation", "FAILED", {"error": str(e)})
+        log_node_event(
+            investigation_id,
+            "NODE_FAILED",
+            "report_generation",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "retryable": False
+            }
+        )
+        log_node_event(
+            investigation_id,
+            "INVESTIGATION_FAILED",
+            "report_generation",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e)
+            }
+        )
+        update_investigation_in_db(
+            investigation_id_str,
+            "report_generation",
+            status="FAILED",
+            completed=True
+        )
         raise
 
 
@@ -563,6 +738,31 @@ def qa_node(state: InvestigationState) -> dict:
             "qa_loop_count": qa_loop_count,
         }
     except Exception as e:
-        log_node_event(investigation_id, "NODE_FAILED", "qa", "FAILED", {"error": str(e)})
-        log_node_event(investigation_id, "INVESTIGATION_FAILED", "qa", "FAILED", {"error": str(e)})
+        log_node_event(
+            investigation_id,
+            "NODE_FAILED",
+            "qa",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "retryable": False
+            }
+        )
+        log_node_event(
+            investigation_id,
+            "INVESTIGATION_FAILED",
+            "qa",
+            "FAILED",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e)
+            }
+        )
+        update_investigation_in_db(
+            investigation_id_str,
+            "qa",
+            status="FAILED",
+            completed=True
+        )
         raise
