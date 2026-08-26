@@ -268,3 +268,83 @@ def report_generation_node(state: InvestigationState) -> dict:
     return {
         "report": report,
     }
+
+
+def qa_node(state: InvestigationState) -> dict:
+    investigation_id_str = state.get("investigation_id")
+    investigation_id = None
+    if investigation_id_str:
+        try:
+            investigation_id = uuid.UUID(str(investigation_id_str))
+        except ValueError:
+            pass
+
+    qa_loop_count = state.get("qa_loop_count") or 0
+
+    if investigation_id:
+        from app.services.qa import validate_report
+        from app.db.session import SessionLocal
+        with SessionLocal() as db:
+            qa_result = validate_report(db, investigation_id)
+    else:
+        # Fallback to local memory-only report validation for non-UUID / dummy IDs in graph tests
+        report = state.get("report") or {}
+        overall_risk = state.get("overall_risk") or {}
+        report_score = report.get("overall_risk", {}).get("score", 0)
+        engine_score = overall_risk.get("score", 0)
+
+        score_verified = (report_score == engine_score)
+
+        resolved_entity = state.get("resolved_entity") or {}
+        entity_verified = bool(
+            resolved_entity
+            and (
+                resolved_entity.get("business_name")
+                or resolved_entity.get("name")
+                or resolved_entity.get("gstin")
+                or resolved_entity.get("cin")
+            )
+        )
+
+        # Simple check for forbidden words in report findings description
+        issues = []
+        findings = report.get("major_findings") or []
+        for finding in findings:
+            desc = finding.get("description") or ""
+            desc_lower = desc.lower()
+            for word in ["fraud", "scam", "fake", "fraudster"]:
+                if word in desc_lower:
+                    issues.append({
+                        "type": "REPORT_WORDING",
+                        "finding": f"Forbidden word '{word}' found in report."
+                    })
+
+        # Check for GST contradiction if dummy GST is inactive but evidence says active
+        results = state.get("results") or []
+        for finding in findings:
+            if finding.get("code") == "GST_INACTIVE":
+                for res in results:
+                    if res.field_name == "gst_status" and "active" in str(res.field_value).lower():
+                        issues.append({
+                            "type": "UNSUPPORTED_CLAIM",
+                            "finding": "GST inactive contradicts active GST research result."
+                        })
+
+        status_str = "PASS" if (score_verified and entity_verified and not issues) else "FAIL"
+
+        qa_result = {
+            "status": status_str,
+            "issues": issues,
+            "evidence_coverage": 1.0 if findings else 0.0,
+            "score_verified": score_verified,
+            "entity_verified": entity_verified,
+        }
+
+    # Increment loop count if validation failed
+    if qa_result["status"] == "FAIL":
+        qa_loop_count += 1
+
+    return {
+        "qa_result": qa_result,
+        "qa_loop_count": qa_loop_count,
+    }

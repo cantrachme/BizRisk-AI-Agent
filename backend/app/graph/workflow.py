@@ -1,5 +1,6 @@
 from langgraph.graph import END, StateGraph
 
+from app.db.base import Base  # noqa: F401
 from app.graph.edges import (
     should_continue,
     should_continue_after_resolution,
@@ -12,8 +13,17 @@ from app.graph.nodes import (
     planner_node,
     risk_analysis_node,
     report_generation_node,
+    qa_node,
 )
 from app.graph.state import InvestigationState
+
+
+def should_continue_after_qa(state: InvestigationState) -> str:
+    qa_res = state.get("qa_result") or {}
+    loop_count = state.get("qa_loop_count") or 0
+    if qa_res.get("status") == "FAIL" and loop_count < 2:
+        return "planner"
+    return "__end__"
 
 
 workflow = StateGraph(InvestigationState)
@@ -25,6 +35,7 @@ workflow.add_node("browser", browser_node)
 workflow.add_node("entity_resolution", entity_resolution_node)
 workflow.add_node("risk_analysis", risk_analysis_node)
 workflow.add_node("report_generation", report_generation_node)
+workflow.add_node("qa", qa_node)
 
 workflow.set_entry_point("intake")
 
@@ -52,6 +63,15 @@ workflow.add_conditional_edges(
 )
 
 workflow.add_edge("risk_analysis", "report_generation")
-workflow.add_edge("report_generation", END)
+workflow.add_edge("report_generation", "qa")
+
+workflow.add_conditional_edges(
+    "qa",
+    should_continue_after_qa,
+    {
+        "planner": "planner",
+        "__end__": END,
+    },
+)
 
 app = workflow.compile()

@@ -157,3 +157,21 @@ def get_investigation_report(
         )
 
     return report
+
+
+@router.get("/{investigation_id}/qa")
+def get_investigation_qa(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.services.qa import validate_report
+
+    try:
+        qa_result = validate_report(db, investigation_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+    return qa_result
