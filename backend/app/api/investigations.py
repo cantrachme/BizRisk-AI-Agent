@@ -112,8 +112,7 @@ def get_investigation_risk(
     investigation_id: uuid.UUID,
     db: Session = Depends(get_db),
 ) -> dict:
-    from app.services.evidence import get_evidences_for_investigation
-    from app.risk.engine import calculate_risk_analysis
+    from app.services.risk_analysis import analyze_investigation
 
     investigation = db.get(Investigation, investigation_id)
 
@@ -123,8 +122,7 @@ def get_investigation_risk(
             detail="Investigation not found.",
         )
 
-    evidences = get_evidences_for_investigation(db, investigation_id)
-    analysis = calculate_risk_analysis(evidences, investigation_id)
+    analysis = analyze_investigation(db, investigation_id)
     return {
         "overall_risk": analysis["overall_risk"],
         "category_scores": analysis["category_scores"],
