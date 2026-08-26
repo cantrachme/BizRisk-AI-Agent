@@ -30,6 +30,9 @@ class InvestigationState(TypedDict):
     completed_tasks: List[ResearchTask]
     failed_tasks: List[ResearchTask]
     results: List[ResearchResult]
+    resolved_entity: Optional[Dict[str, Any]]
+    entity_confidence: float
+    entity_resolution_status: str
     planner_loop_count: int
     status: str
 

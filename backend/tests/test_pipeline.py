@@ -24,7 +24,7 @@ def test_pipeline_normalizes_discovers_plans_and_executes_research():
     assert output["normalized_input"]["business_name"] == "ABC FOODS PVT LTD"
     assert output["normalized_input"]["gstin"] == "27ABCDE1234F1Z5"
 
-    assert output["planner_loop_count"] == 2
+    assert output["planner_loop_count"] == 1
     assert output["pending_tasks"] == []
     assert output["failed_tasks"] == []
 
@@ -48,4 +48,4 @@ def test_pipeline_normalizes_discovers_plans_and_executes_research():
     assert "gst_status" in result_fields
     assert "website_status" in result_fields
 
-    assert output["status"] == "COMPLETED"
+    assert output["status"] == "ENTITY_RESOLVED"

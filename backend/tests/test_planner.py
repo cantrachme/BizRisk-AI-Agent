@@ -79,13 +79,13 @@ def test_state_updates_in_langgraph_flow():
     output_state = graph_app.invoke(initial_state)
 
     # The full graph now executes:
-    # Intake -> Discovery -> Planner -> Browser -> Planner -> END
-    assert output_state["planner_loop_count"] == 2
+    # Intake -> Discovery -> Planner -> Browser -> Entity Resolution -> END
+    assert output_state["planner_loop_count"] == 1
     assert len(output_state["pending_tasks"]) == 0
     assert len(output_state["completed_tasks"]) == 1
     assert output_state["completed_tasks"][0].task_type == "GST_VERIFICATION"
     assert output_state["completed_tasks"][0].status == "COMPLETED"
-    assert output_state["status"] == "COMPLETED"
+    assert output_state["status"] == "ENTITY_RESOLVED"
 
 
 def test_loop_count_limit_is_enforced():
