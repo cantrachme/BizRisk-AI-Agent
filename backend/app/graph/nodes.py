@@ -78,3 +78,39 @@ def planner_node(state: InvestigationState) -> dict:
         "planner_loop_count": current_loops,
         "status": status,
     }
+
+
+def browser_node(state: InvestigationState) -> dict:
+    from app.agents.browser import BrowserResearchAgent
+
+    agent = BrowserResearchAgent()
+
+    pending_tasks = state.get("pending_tasks") or []
+    existing_completed = state.get("completed_tasks") or []
+    existing_failed = state.get("failed_tasks") or []
+    existing_results = state.get("results") or []
+
+    completed_tasks = list(existing_completed)
+    failed_tasks = list(existing_failed)
+    results = list(existing_results)
+
+    for task in pending_tasks:
+        task_results = agent.execute(task)
+
+        if task_results:
+            completed_tasks.append(
+                task.model_copy(update={"status": "COMPLETED"})
+            )
+            results.extend(task_results)
+        else:
+            failed_tasks.append(
+                task.model_copy(update={"status": "FAILED"})
+            )
+
+    return {
+        "pending_tasks": [],
+        "completed_tasks": completed_tasks,
+        "failed_tasks": failed_tasks,
+        "results": results,
+        "status": "RESEARCH_COMPLETED",
+    }
