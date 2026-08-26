@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
-from sqlalchemy import DateTime, String, Text, func
+from sqlalchemy import DateTime, String, Text, func, Integer, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -18,6 +18,16 @@ class Investigation(Base):
         nullable=False,
     )
     input_data: Mapped[str] = mapped_column(Text, nullable=False)
+    current_node: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    risk_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    risk_level: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    resolved_entity_id: Mapped[Optional[uuid.UUID]] = mapped_column(nullable=True)
+    entity_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -36,6 +46,11 @@ class Investigation(Base):
     )
 
     risk_signals: Mapped[List["RiskSignal"]] = relationship(
+        back_populates="investigation",
+        cascade="all, delete-orphan",
+    )
+
+    reports: Mapped[List["Report"]] = relationship(
         back_populates="investigation",
         cascade="all, delete-orphan",
     )

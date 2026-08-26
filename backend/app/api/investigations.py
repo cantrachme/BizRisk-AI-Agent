@@ -60,6 +60,13 @@ def get_investigation(
         "id": str(investigation.id),
         "status": investigation.status,
         "input": json.loads(investigation.input_data),
+        "current_node": investigation.current_node,
+        "retry_count": investigation.retry_count,
+        "risk_score": investigation.risk_score,
+        "risk_level": investigation.risk_level,
+        "resolved_entity_id": str(investigation.resolved_entity_id) if investigation.resolved_entity_id else None,
+        "entity_confidence": investigation.entity_confidence,
+        "completed_at": investigation.completed_at,
         "created_at": investigation.created_at,
         "updated_at": investigation.updated_at,
     }
@@ -146,8 +153,24 @@ def get_investigation_report(
     investigation_id: uuid.UUID,
     db: Session = Depends(get_db),
 ) -> dict:
-    from app.services.report import generate_investigation_report
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found.",
+        )
 
+    from app.models.report import Report
+    latest_report = (
+        db.query(Report)
+        .filter(Report.investigation_id == investigation_id)
+        .order_by(Report.version.desc())
+        .first()
+    )
+    if latest_report:
+        return json.loads(latest_report.report_json)
+
+    from app.services.report import generate_investigation_report
     try:
         report = generate_investigation_report(db, investigation_id)
     except ValueError as e:
@@ -157,6 +180,39 @@ def get_investigation_report(
         )
 
     return report
+
+
+@router.get("/{investigation_id}/reports")
+def get_investigation_reports(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> list:
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found.",
+        )
+
+    from app.models.report import Report
+    reports = (
+        db.query(Report)
+        .filter(Report.investigation_id == investigation_id)
+        .order_by(Report.version.asc())
+        .all()
+    )
+
+    return [
+        {
+            "id": str(rep.id),
+            "investigation_id": str(rep.investigation_id),
+            "version": rep.version,
+            "report": json.loads(rep.report_json),
+            "qa_status": rep.qa_status,
+            "created_at": rep.created_at.isoformat() if rep.created_at else None,
+        }
+        for rep in reports
+    ]
 
 
 @router.get("/{investigation_id}/qa")
