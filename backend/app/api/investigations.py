@@ -139,3 +139,21 @@ def get_investigation_risk(
             for sig in analysis["risk_signals"]
         ],
     }
+
+
+@router.get("/{investigation_id}/report")
+def get_investigation_report(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.services.report import generate_investigation_report
+
+    try:
+        report = generate_investigation_report(db, investigation_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+    return report
