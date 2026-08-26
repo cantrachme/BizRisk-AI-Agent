@@ -39,5 +39,7 @@ class InvestigationState(TypedDict):
     category_scores: Optional[Dict[str, Any]]
     risk_signals: Optional[List[Dict[str, Any]]]
     report: Optional[Dict[str, Any]]
+    qa_result: Optional[Dict[str, Any]]
+    qa_loop_count: int
 
 MAX_PLANNER_LOOPS = 3
