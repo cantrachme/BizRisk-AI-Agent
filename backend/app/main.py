@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.api import investigations_router
 from app.core.config import get_settings
 
 
@@ -10,6 +11,8 @@ app = FastAPI(
     description="AI-powered business due diligence and risk assessment platform.",
     version=settings.app_version,
 )
+
+app.include_router(investigations_router, prefix="/api/v1")
 
 
 @app.get("/")
