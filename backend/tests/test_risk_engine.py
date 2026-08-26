@@ -160,6 +160,7 @@ def test_calculate_risk_analysis():
         make_test_result(result_id="R1", field_name="gst_status", field_value="Inactive"), # GST_INACTIVE (weight 30)
         make_test_result(result_id="R2", field_name="legal_name", field_value="Company X"),
         make_test_result(result_id="R3", field_name="legal_name", field_value="Company Y"), # LEGAL_NAME_CONFLICT (weight 25)
+        make_test_result(result_id="SUP-001", source_name="Company Website", field_name="website_status", field_value="Active"),
     ]
     analysis = calculate_risk_analysis(results)
 
@@ -190,7 +191,7 @@ def test_calculate_risk_analysis_score_cap():
         make_test_result(result_id="R6", field_name="business_activity", field_value="Act A"),
         make_test_result(result_id="R7", field_name="business_activity", field_value="Act B"), # 10
         make_test_result(result_id="R8", field_name="registration_date", field_value="2026-08-20", retrieved_at="2026-08-26T10:00:00+00:00"), # 5
-        # Total weight sum: 80. Let's add duplicate name matches to verify we do not crash.
+        make_test_result(result_id="SUP-001", source_name="Company Website", field_name="website_status", field_value="Active"),
     ]
     analysis = calculate_risk_analysis(results)
     assert analysis["overall_risk"]["score"] == 80
@@ -201,6 +202,7 @@ def test_calculate_risk_analysis_score_cap():
 def test_persist_risk_analysis(db_session, investigation_id):
     results = [
         make_test_result(result_id="R1", field_name="gst_status", field_value="Inactive"),
+        make_test_result(result_id="SUP-001", source_name="Company Website", field_name="website_status", field_value="Active"),
     ]
     analysis = calculate_risk_analysis(results)
 
@@ -221,6 +223,7 @@ def test_persist_risk_analysis(db_session, investigation_id):
     new_results = [
         make_test_result(result_id="R2", field_name="legal_name", field_value="X"),
         make_test_result(result_id="R3", field_name="legal_name", field_value="Y"),
+        make_test_result(result_id="SUP-001", source_name="Company Website", field_name="website_status", field_value="Active"),
     ]
     new_analysis = calculate_risk_analysis(new_results)
     persist_risk_analysis(db_session, investigation_id, new_analysis)

@@ -42,3 +42,15 @@ risk_levels:
   very_high:
     min: 81
     max: 100
+
+minimum_evidence_policy:
+  enabled: false
+  min_legal_identity_sources: 1
+  min_supporting_sources: 1
+  legal_identity_sources:
+    - "GST Portal"
+    - "MCA Portal"
+  supporting_sources:
+    - "Company Website"
+    - "General Web"
+    - "Third-Party Source"
