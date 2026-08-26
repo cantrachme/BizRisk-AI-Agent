@@ -104,8 +104,8 @@ def generate_investigation_report(
             "confidence": ev.confidence,
         })
 
-    # 7. Construct and return the report
-    return {
+    # 7. Construct the report dict
+    report_dict = {
         "entity": entity,
         "entity_confidence": entity_confidence,
         "overall_risk": {
@@ -124,3 +124,45 @@ def generate_investigation_report(
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
     }
+
+    # 8. Persist the report
+    from app.models.report import Report
+    reports = db.query(Report).filter(Report.investigation_id == investigation_id).order_by(Report.version.asc()).all()
+    if not reports:
+        db_version = 1
+    else:
+        latest_report = reports[-1]
+        if latest_report.qa_status == "PENDING":
+            db_version = latest_report.version
+        else:
+            db_version = latest_report.version + 1
+
+    report_dict["meta"]["report_version"] = str(db_version)
+
+    if not reports:
+        new_report = Report(
+            investigation_id=investigation_id,
+            version=db_version,
+            report_json=json.dumps(report_dict),
+            qa_status="PENDING",
+        )
+        db.add(new_report)
+        db.commit()
+    else:
+        latest_report = reports[-1]
+        if latest_report.qa_status == "PENDING":
+            # Overwrite in-place (unintentional regeneration/retrieval)
+            latest_report.report_json = json.dumps(report_dict)
+            db.commit()
+        else:
+            # Create a new version
+            new_report = Report(
+                investigation_id=investigation_id,
+                version=db_version,
+                report_json=json.dumps(report_dict),
+                qa_status="PENDING",
+            )
+            db.add(new_report)
+            db.commit()
+
+    return report_dict

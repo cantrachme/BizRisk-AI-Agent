@@ -12,9 +12,52 @@ from app.graph.state import (
 )
 
 
+def update_investigation_in_db(
+    investigation_id_str: str | None,
+    current_node: str,
+    status: str | None = None,
+    retry_count: int | None = None,
+    risk_score: int | None = None,
+    risk_level: str | None = None,
+    resolved_entity_id: uuid.UUID | None = None,
+    entity_confidence: float | None = None,
+    completed: bool = False,
+):
+    if not investigation_id_str:
+        return
+    try:
+        investigation_id = uuid.UUID(str(investigation_id_str))
+    except ValueError:
+        return
+
+    from app.db.session import SessionLocal
+    from app.models.investigation import Investigation
+    from datetime import datetime, timezone
+
+    with SessionLocal() as db:
+        inv = db.get(Investigation, investigation_id)
+        if inv:
+            inv.current_node = current_node
+            if status:
+                inv.status = status
+            if retry_count is not None:
+                inv.retry_count = retry_count
+            if risk_score is not None:
+                inv.risk_score = risk_score
+            if risk_level:
+                inv.risk_level = risk_level
+            if resolved_entity_id is not None:
+                inv.resolved_entity_id = resolved_entity_id
+            if entity_confidence is not None:
+                inv.entity_confidence = entity_confidence
+            if completed:
+                inv.completed_at = datetime.now(timezone.utc)
+            db.commit()
+
+
 def intake_node(state: InvestigationState) -> dict:
     normalized_input = IntakeAgent().process(state.get("raw_input") or {})
-
+    update_investigation_in_db(state.get("investigation_id"), "intake", status="NORMALIZED")
     return {
         "normalized_input": normalized_input,
         "status": "NORMALIZED",
@@ -29,6 +72,7 @@ def discovery_node(state: InvestigationState) -> dict:
     candidates = discovery.get("candidate_entities", [])
 
     if not candidates:
+        update_investigation_in_db(state.get("investigation_id"), "discovery", status="DISCOVERY_COMPLETED")
         return {
             "results": [],
             "status": "DISCOVERY_COMPLETED",
@@ -58,6 +102,7 @@ def discovery_node(state: InvestigationState) -> dict:
         except ValueError:
             pass
 
+    update_investigation_in_db(investigation_id_str, "discovery", status="DISCOVERY_COMPLETED")
     return {
         "results": [result],
         "status": "DISCOVERY_COMPLETED",
@@ -68,6 +113,7 @@ def planner_node(state: InvestigationState) -> dict:
     current_loops = state.get("planner_loop_count", 0)
 
     if current_loops >= MAX_PLANNER_LOOPS:
+        update_investigation_in_db(state.get("investigation_id"), "planner", status="MAX_LOOPS_REACHED", retry_count=state.get("qa_loop_count", 0))
         return {
             "pending_tasks": [],
             "status": "MAX_LOOPS_REACHED",
@@ -86,6 +132,7 @@ def planner_node(state: InvestigationState) -> dict:
     else:
         status = "COMPLETED"
 
+    update_investigation_in_db(state.get("investigation_id"), "planner", status=status, retry_count=state.get("qa_loop_count", 0))
     return {
         "pending_tasks": updated_pending,
         "planner_loop_count": current_loops,
@@ -133,6 +180,7 @@ def browser_node(state: InvestigationState) -> dict:
         except ValueError:
             pass
 
+    update_investigation_in_db(investigation_id_str, "browser", status="RESEARCH_COMPLETED")
     return {
         "pending_tasks": [],
         "completed_tasks": completed_tasks,
@@ -156,6 +204,22 @@ def entity_resolution_node(state: InvestigationState) -> dict:
     resolution = resolve_entity(
         normalized_input,
         candidates,
+    )
+
+    status = "ENTITY_RESOLVED" if resolution["matched"] else "ENTITY_UNRESOLVED"
+    resolved_entity_id = None
+    entity = resolution.get("entity")
+    if entity:
+        name_val = entity.get("business_name") or entity.get("name")
+        if name_val:
+            resolved_entity_id = uuid.uuid5(uuid.NAMESPACE_DNS, str(name_val))
+
+    update_investigation_in_db(
+        state.get("investigation_id"),
+        "entity_resolution",
+        status=status,
+        resolved_entity_id=resolved_entity_id,
+        entity_confidence=resolution["confidence"],
     )
 
     if resolution["matched"]:
@@ -193,6 +257,13 @@ def risk_analysis_node(state: InvestigationState) -> dict:
         from app.risk.engine import calculate_risk_analysis
         results = state.get("results") or []
         analysis = calculate_risk_analysis(results)
+
+    update_investigation_in_db(
+        investigation_id_str,
+        "risk_analysis",
+        risk_score=analysis["overall_risk"]["score"],
+        risk_level=analysis["overall_risk"]["level"]
+    )
 
     return {
         "overall_risk": analysis["overall_risk"],
@@ -265,6 +336,7 @@ def report_generation_node(state: InvestigationState) -> dict:
             }
         }
 
+    update_investigation_in_db(investigation_id_str, "report_generation", status="REPORT_GENERATED")
     return {
         "report": report,
     }
@@ -343,6 +415,17 @@ def qa_node(state: InvestigationState) -> dict:
     # Increment loop count if validation failed
     if qa_result["status"] == "FAIL":
         qa_loop_count += 1
+
+    status = "COMPLETED" if qa_result["status"] == "PASS" or qa_loop_count >= 2 else "FAILED_QA"
+    completed = (qa_result["status"] == "PASS" or qa_loop_count >= 2)
+
+    update_investigation_in_db(
+        investigation_id_str,
+        "qa",
+        status=status,
+        retry_count=qa_loop_count,
+        completed=completed
+    )
 
     return {
         "qa_result": qa_result,

@@ -126,6 +126,18 @@ def validate_report(
 
     status_str = "PASS" if not issues else "FAIL"
 
+    # Update persisted report QA status
+    from app.models.report import Report
+    latest_report = (
+        db.query(Report)
+        .filter(Report.investigation_id == investigation_id)
+        .order_by(Report.version.desc())
+        .first()
+    )
+    if latest_report:
+        latest_report.qa_status = status_str
+        db.commit()
+
     return {
         "status": status_str,
         "issues": issues,
