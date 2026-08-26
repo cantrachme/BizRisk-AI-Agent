@@ -9,3 +9,4 @@ class Base(DeclarativeBase):
 # before any mapper configurations or queries are run.
 from app.models.investigation import Investigation  # noqa: F401
 from app.models.evidence import Evidence  # noqa: F401
+from app.models.risk_signal import RiskSignal  # noqa: F401

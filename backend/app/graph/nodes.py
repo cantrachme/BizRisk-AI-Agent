@@ -175,20 +175,24 @@ def entity_resolution_node(state: InvestigationState) -> dict:
 
 
 def risk_analysis_node(state: InvestigationState) -> dict:
-    from app.risk.engine import calculate_risk_analysis, persist_risk_analysis
-
-    results = state.get("results") or []
-    analysis = calculate_risk_analysis(results)
-
     investigation_id_str = state.get("investigation_id")
+    investigation_id = None
     if investigation_id_str:
         try:
             investigation_id = uuid.UUID(str(investigation_id_str))
-            from app.db.session import SessionLocal
-            with SessionLocal() as db:
-                persist_risk_analysis(db, investigation_id, analysis)
         except ValueError:
             pass
+
+    if investigation_id:
+        from app.services.risk_analysis import analyze_investigation
+        from app.db.session import SessionLocal
+        with SessionLocal() as db:
+            analysis = analyze_investigation(db, investigation_id)
+    else:
+        # Fallback to local memory-only calculation for non-UUID / dummy IDs in graph tests
+        from app.risk.engine import calculate_risk_analysis
+        results = state.get("results") or []
+        analysis = calculate_risk_analysis(results)
 
     return {
         "overall_risk": analysis["overall_risk"],
