@@ -13,3 +13,21 @@ def should_continue(state: InvestigationState) -> str:
         return "browser"
 
     return "__end__"
+
+
+
+def should_continue_after_resolution(
+    state: InvestigationState,
+) -> str:
+    if state.get("entity_resolution_status") in {
+        "EXACT",
+        "SIMILARITY",
+    }:
+        return "__end__"
+
+    loop_count = state.get("planner_loop_count", 0)
+
+    if loop_count >= MAX_PLANNER_LOOPS:
+        return "__end__"
+
+    return "planner"

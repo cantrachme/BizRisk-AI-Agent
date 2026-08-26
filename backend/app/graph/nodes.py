@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from app.agents.discovery import DiscoveryAgent
 from app.agents.intake import IntakeAgent
 from app.agents.planner import PlannerAgent
+from app.entity_resolution.resolver import resolve_entity
 from app.graph.state import (
     InvestigationState,
     MAX_PLANNER_LOOPS,
@@ -113,4 +114,36 @@ def browser_node(state: InvestigationState) -> dict:
         "failed_tasks": failed_tasks,
         "results": results,
         "status": "RESEARCH_COMPLETED",
+    }
+
+
+
+def entity_resolution_node(state: InvestigationState) -> dict:
+    normalized_input = state.get("normalized_input") or {}
+    results = state.get("results") or []
+
+    candidates = []
+
+    for result in results:
+        if result.field_name == "candidate_entities":
+            candidates.extend(result.field_value or [])
+
+    resolution = resolve_entity(
+        normalized_input,
+        candidates,
+    )
+
+    if resolution["matched"]:
+        return {
+            "resolved_entity": resolution["entity"],
+            "entity_confidence": resolution["confidence"],
+            "entity_resolution_status": resolution["match_type"],
+            "status": "ENTITY_RESOLVED",
+        }
+
+    return {
+        "resolved_entity": resolution["entity"],
+        "entity_confidence": resolution["confidence"],
+        "entity_resolution_status": resolution["match_type"],
+        "status": "ENTITY_UNRESOLVED",
     }
