@@ -63,3 +63,36 @@ def get_investigation(
         "created_at": investigation.created_at,
         "updated_at": investigation.updated_at,
     }
+
+
+@router.get("/{investigation_id}/evidence")
+def get_investigation_evidence(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> list:
+    from app.services.evidence import get_evidences_for_investigation
+
+    investigation = db.get(Investigation, investigation_id)
+
+    if investigation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found.",
+        )
+
+    evidences = get_evidences_for_investigation(db, investigation_id)
+    return [
+        {
+            "id": str(ev.id),
+            "investigation_id": str(ev.investigation_id),
+            "research_result_id": ev.research_result_id,
+            "task_id": ev.task_id,
+            "field_name": ev.field_name,
+            "field_value": ev.field_value,
+            "source_name": ev.source_name,
+            "source_url": ev.source_url,
+            "retrieved_timestamp": ev.retrieved_timestamp,
+            "created_timestamp": ev.created_timestamp,
+        }
+        for ev in evidences
+    ]
