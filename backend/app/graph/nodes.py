@@ -172,3 +172,26 @@ def entity_resolution_node(state: InvestigationState) -> dict:
         "entity_resolution_status": resolution["match_type"],
         "status": "ENTITY_UNRESOLVED",
     }
+
+
+def risk_analysis_node(state: InvestigationState) -> dict:
+    from app.risk.engine import calculate_risk_analysis, persist_risk_analysis
+
+    results = state.get("results") or []
+    analysis = calculate_risk_analysis(results)
+
+    investigation_id_str = state.get("investigation_id")
+    if investigation_id_str:
+        try:
+            investigation_id = uuid.UUID(str(investigation_id_str))
+            from app.db.session import SessionLocal
+            with SessionLocal() as db:
+                persist_risk_analysis(db, investigation_id, analysis)
+        except ValueError:
+            pass
+
+    return {
+        "overall_risk": analysis["overall_risk"],
+        "category_scores": analysis["category_scores"],
+        "risk_signals": analysis["risk_signals"],
+    }

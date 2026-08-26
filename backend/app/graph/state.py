@@ -35,5 +35,8 @@ class InvestigationState(TypedDict):
     entity_resolution_status: str
     planner_loop_count: int
     status: str
+    overall_risk: Optional[Dict[str, Any]]
+    category_scores: Optional[Dict[str, Any]]
+    risk_signals: Optional[List[Dict[str, Any]]]
 
 MAX_PLANNER_LOOPS = 3

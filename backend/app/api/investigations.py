@@ -105,3 +105,39 @@ def get_investigation_evidence(
         }
         for ev in evidences
     ]
+
+
+@router.get("/{investigation_id}/risk")
+def get_investigation_risk(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.services.evidence import get_evidences_for_investigation
+    from app.risk.engine import calculate_risk_analysis
+
+    investigation = db.get(Investigation, investigation_id)
+
+    if investigation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found.",
+        )
+
+    evidences = get_evidences_for_investigation(db, investigation_id)
+    analysis = calculate_risk_analysis(evidences, investigation_id)
+    return {
+        "overall_risk": analysis["overall_risk"],
+        "category_scores": analysis["category_scores"],
+        "risk_signals": [
+            {
+                "category": sig["category"],
+                "code": sig["code"],
+                "severity": sig["severity"],
+                "description": sig["description"],
+                "evidence_ids": sig["evidence_ids"],
+                "confidence": sig["confidence"],
+                "risk_weight": sig["risk_weight"],
+            }
+            for sig in analysis["risk_signals"]
+        ],
+    }
