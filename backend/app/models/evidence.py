@@ -15,6 +15,7 @@ class Evidence(Base):
     investigation_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("investigations.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
     research_result_id: Mapped[str] = mapped_column(String(100), nullable=False)
     task_id: Mapped[str] = mapped_column(String(100), nullable=False)

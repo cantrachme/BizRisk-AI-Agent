@@ -127,13 +127,9 @@ def browser_node(state: InvestigationState) -> dict:
         try:
             investigation_id = uuid.UUID(str(investigation_id_str))
             from app.db.session import SessionLocal
-            from app.services.evidence import save_research_result
+            from app.services.evidence import save_research_results
             with SessionLocal() as db:
-                for res in new_results:
-                    save_research_result(
-                        db, res, investigation_id, commit=False
-                    )
-                db.commit()
+                save_research_results(db, new_results, investigation_id)
         except ValueError:
             pass
 

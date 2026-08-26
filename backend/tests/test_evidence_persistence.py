@@ -1,6 +1,5 @@
-import os
-import sys
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -8,11 +7,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-
-# Add backend directory to sys.path
-sys.path.insert(
-    0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
-)
 
 from app.db.base import Base
 from app.db.session import get_db
@@ -23,6 +17,7 @@ from app.models.investigation import Investigation
 from app.services.evidence import (
     get_evidences_for_investigation,
     save_research_result,
+    save_research_results,
 )
 
 
@@ -279,7 +274,7 @@ def test_get_investigation_evidence_api(db_session, investigation_id):
 
     # Save some test evidence
     result = make_test_result(
-        result_id="RES-003", field_name="gst_status", field_value="Active"
+        result_id="RES-003", field_name="gst_status", field_value="Active", confidence=0.85
     )
     save_research_result(db_session, result, investigation_id)
 
@@ -291,7 +286,10 @@ def test_get_investigation_evidence_api(db_session, investigation_id):
     assert len(data) == 1
     assert data[0]["research_result_id"] == "RES-003"
     assert data[0]["field_value"] == "Active"
-    assert data[0]["confidence"] == 0.95
+
+    # Assert missing field confidence is returned correctly
+    assert "confidence" in data[0]
+    assert data[0]["confidence"] == 0.85
 
     # Clean up overrides
     app.dependency_overrides.clear()
@@ -316,3 +314,80 @@ def test_get_investigation_evidence_api_not_found(db_session):
     assert response.json()["detail"] == "Investigation not found."
 
     app.dependency_overrides.clear()
+
+
+def test_timezone_aware_timestamp_persistence_and_retrieval(db_session, investigation_id):
+    # Retrieve timestamp with explicit non-UTC offset
+    result = make_test_result(
+        result_id="RES-TZ-1",
+        retrieved_at="2026-08-26T12:34:56+05:30",
+    )
+    evidence = save_research_result(db_session, result, investigation_id)
+    assert evidence is not None
+
+    # 12:34:56+05:30 represents 07:04:56 UTC.
+    dt = evidence.retrieved_timestamp
+    if dt.tzinfo is not None:
+        dt_utc = dt.astimezone(timezone.utc)
+    else:
+        dt_utc = dt.replace(tzinfo=timezone.utc)
+
+    assert dt_utc.hour == 7
+    assert dt_utc.minute == 4
+
+    # Run API test
+    def override_get_db():
+        try:
+            yield db_session
+        finally:
+            pass
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    response = client.get(f"/api/v1/investigations/{investigation_id}/evidence")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Verify offset is preserved in API output (should represent the correct point in time in ISO 8601)
+    api_timestamp = data[0]["retrieved_timestamp"]
+    assert "07:04:56" in api_timestamp
+    assert "+00:00" in api_timestamp or "Z" in api_timestamp
+
+    app.dependency_overrides.clear()
+
+
+def test_save_research_results_batch_transaction(db_session, investigation_id):
+    results = [
+        make_test_result(result_id="BATCH-1", field_name="f1", field_value="v1"),
+        make_test_result(result_id="BATCH-2", field_name="f2", field_value="v2"),
+    ]
+
+    # Verify batch function works and inserts all items
+    evs = save_research_results(db_session, results, investigation_id)
+    assert len(evs) == 2
+    assert evs[0].research_result_id == "BATCH-1"
+    assert evs[1].research_result_id == "BATCH-2"
+
+    # Check database query
+    db_evs = get_evidences_for_investigation(db_session, investigation_id)
+    assert len(db_evs) == 2
+
+
+def test_trailing_z_timestamp_parsing(db_session, investigation_id):
+    # Retrieve timestamp ending with 'Z'
+    result = make_test_result(
+        result_id="RES-Z-1",
+        retrieved_at="2026-08-26T10:00:00Z",
+    )
+    evidence = save_research_result(db_session, result, investigation_id)
+    assert evidence is not None
+
+    # 10:00:00Z represents 10:00:00 UTC.
+    dt = evidence.retrieved_timestamp
+    if dt.tzinfo is not None:
+        dt_utc = dt.astimezone(timezone.utc)
+    else:
+        dt_utc = dt.replace(tzinfo=timezone.utc)
+
+    assert dt_utc.hour == 10
+    assert dt_utc.minute == 0

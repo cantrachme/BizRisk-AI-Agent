@@ -70,6 +70,7 @@ def get_investigation_evidence(
     investigation_id: uuid.UUID,
     db: Session = Depends(get_db),
 ) -> list:
+    from datetime import timezone
     from app.services.evidence import get_evidences_for_investigation
 
     investigation = db.get(Investigation, investigation_id)
@@ -79,6 +80,13 @@ def get_investigation_evidence(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Investigation not found.",
         )
+
+    def format_dt(dt):
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
 
     evidences = get_evidences_for_investigation(db, investigation_id)
     return [
@@ -91,9 +99,9 @@ def get_investigation_evidence(
             "field_value": ev.field_value,
             "source_name": ev.source_name,
             "source_url": ev.source_url,
-            "retrieved_timestamp": ev.retrieved_timestamp,
+            "retrieved_timestamp": format_dt(ev.retrieved_timestamp),
             "confidence": ev.confidence,
-            "created_timestamp": ev.created_timestamp,
+            "created_timestamp": format_dt(ev.created_timestamp),
         }
         for ev in evidences
     ]
