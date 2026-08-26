@@ -199,3 +199,72 @@ def risk_analysis_node(state: InvestigationState) -> dict:
         "category_scores": analysis["category_scores"],
         "risk_signals": analysis["risk_signals"],
     }
+
+
+def report_generation_node(state: InvestigationState) -> dict:
+    investigation_id_str = state.get("investigation_id")
+    investigation_id = None
+    if investigation_id_str:
+        try:
+            investigation_id = uuid.UUID(str(investigation_id_str))
+        except ValueError:
+            pass
+
+    if investigation_id:
+        from app.services.report import generate_investigation_report
+        from app.db.session import SessionLocal
+        with SessionLocal() as db:
+            report = generate_investigation_report(db, investigation_id)
+    else:
+        # Fallback to local memory-only report generation for non-UUID / dummy IDs in graph tests
+        from app.risk.engine import calculate_risk_analysis
+        from app.services.report import generate_recommendation
+        results = state.get("results") or []
+        analysis = calculate_risk_analysis(results)
+
+        report = {
+            "entity": state.get("resolved_entity") or {},
+            "entity_confidence": state.get("entity_confidence") or 0.0,
+            "overall_risk": {
+                "score": analysis["overall_risk"]["score"],
+                "level": analysis["overall_risk"]["level"],
+            },
+            "category_scores": analysis["category_scores"],
+            "major_findings": [
+                {
+                    "code": sig["code"],
+                    "category": sig["category"],
+                    "severity": sig["severity"],
+                    "description": sig["description"],
+                    "evidence_ids": sig["evidence_ids"],
+                    "confidence": sig["confidence"],
+                    "risk_weight": sig["risk_weight"],
+                }
+                for sig in analysis["risk_signals"]
+            ],
+            "positive_findings": [],
+            "unverified_information": [],
+            "recommendation": generate_recommendation(analysis["overall_risk"]["score"]),
+            "evidence_summary": [
+                {
+                    "evidence_id": res.result_id,
+                    "task_id": res.task_id,
+                    "field_name": res.field_name,
+                    "field_value": res.field_value,
+                    "source_name": res.source_name,
+                    "source_url": res.source_url,
+                    "retrieved_at": res.retrieved_at,
+                    "confidence": res.confidence,
+                }
+                for res in results
+            ],
+            "meta": {
+                "rule_version": "1.0.0",
+                "report_version": "1.0.0",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        }
+
+    return {
+        "report": report,
+    }

@@ -38,5 +38,6 @@ class InvestigationState(TypedDict):
     overall_risk: Optional[Dict[str, Any]]
     category_scores: Optional[Dict[str, Any]]
     risk_signals: Optional[List[Dict[str, Any]]]
+    report: Optional[Dict[str, Any]]
 
 MAX_PLANNER_LOOPS = 3

@@ -4,10 +4,12 @@ from app.services.evidence import (
     get_evidences_for_investigation,
 )
 from app.services.risk_analysis import analyze_investigation
+from app.services.report import generate_investigation_report
 
 __all__ = [
     "save_research_result",
     "save_research_results",
     "get_evidences_for_investigation",
     "analyze_investigation",
+    "generate_investigation_report",
 ]
