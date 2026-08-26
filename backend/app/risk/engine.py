@@ -11,6 +11,11 @@ from app.risk.rules import normalize_evidence, run_all_rules
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
 
 
+class InsufficientEvidenceError(ValueError):
+    """Exception raised when the minimum evidence requirements are not met."""
+    pass
+
+
 def load_config() -> Dict[str, Any]:
     with open(CONFIG_PATH, "r") as f:
         return yaml.safe_load(f)
@@ -26,6 +31,36 @@ def calculate_risk_analysis(
     config = load_config()
     rules_config = config.get("rules", {})
     levels_config = config.get("risk_levels", {})
+
+    # Check minimum evidence requirement
+    policy = config.get("minimum_evidence_policy", {})
+    if policy.get("enabled", False):
+        legal_sources_cfg = policy.get("legal_identity_sources", [])
+        supporting_sources_cfg = policy.get("supporting_sources", [])
+        min_legal = policy.get("min_legal_identity_sources", 1)
+        min_supporting = policy.get("min_supporting_sources", 1)
+
+        legal_found = set()
+        supporting_found = set()
+
+        for ev in evidences_raw:
+            # Handle both SQLAlchemy objects and ResearchResult/dict objects
+            source_name = getattr(ev, "source_name", None)
+            if source_name is None and isinstance(ev, dict):
+                source_name = ev.get("source_name")
+
+            if source_name:
+                if source_name in legal_sources_cfg:
+                    legal_found.add(source_name)
+                elif source_name in supporting_sources_cfg:
+                    supporting_found.add(source_name)
+
+        if len(legal_found) < min_legal or len(supporting_found) < min_supporting:
+            raise InsufficientEvidenceError(
+                f"Minimum evidence requirement not met. "
+                f"Required: {min_legal} legal source(s) (found {len(legal_found)}: {list(legal_found)}) and "
+                f"{min_supporting} supporting source(s) (found {len(supporting_found)}: {list(supporting_found)})."
+            )
 
     # Normalize incoming raw evidence
     normalized_evs = [normalize_evidence(ev) for ev in evidences_raw]

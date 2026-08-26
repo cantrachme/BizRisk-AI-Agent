@@ -129,7 +129,13 @@ def get_investigation_risk(
             detail="Investigation not found.",
         )
 
-    analysis = analyze_investigation(db, investigation_id)
+    try:
+        analysis = analyze_investigation(db, investigation_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        )
     return {
         "overall_risk": analysis["overall_risk"],
         "category_scores": analysis["category_scores"],
