@@ -11,3 +11,4 @@ from app.models.investigation import Investigation  # noqa: F401
 from app.models.evidence import Evidence  # noqa: F401
 from app.models.risk_signal import RiskSignal  # noqa: F401
 from app.models.report import Report  # noqa: F401
+from app.models.investigation_event import InvestigationEvent  # noqa: F401
