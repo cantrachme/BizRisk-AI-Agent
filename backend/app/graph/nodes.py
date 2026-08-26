@@ -1,32 +1,71 @@
+from datetime import datetime, timezone
+
+from app.agents.discovery import DiscoveryAgent
+from app.agents.intake import IntakeAgent
 from app.agents.planner import PlannerAgent
-from app.graph.state import InvestigationState, MAX_PLANNER_LOOPS
+from app.graph.state import (
+    InvestigationState,
+    MAX_PLANNER_LOOPS,
+    ResearchResult,
+)
+
+
+def intake_node(state: InvestigationState) -> dict:
+    normalized_input = IntakeAgent().process(state.get("raw_input") or {})
+
+    return {
+        "normalized_input": normalized_input,
+        "status": "NORMALIZED",
+    }
+
+
+def discovery_node(state: InvestigationState) -> dict:
+    discovery = DiscoveryAgent().process(
+        state.get("normalized_input") or {}
+    )
+
+    candidates = discovery.get("candidate_entities", [])
+
+    if not candidates:
+        return {
+            "results": [],
+            "status": "DISCOVERY_COMPLETED",
+        }
+
+    result = ResearchResult(
+        result_id="DISCOVERY-001",
+        task_id="DISCOVERY",
+        field_name="candidate_entities",
+        field_value=candidates,
+        source_name="discovery_agent",
+        retrieved_at=datetime.now(timezone.utc).isoformat(),
+        confidence=max(
+            candidate.get("confidence", 0.0)
+            for candidate in candidates
+        ),
+    )
+
+    return {
+        "results": [result],
+        "status": "DISCOVERY_COMPLETED",
+    }
+
 
 def planner_node(state: InvestigationState) -> dict:
-    """
-    LangGraph node for executing the Planner Agent.
-    Evaluates current state, generates any missing research tasks,
-    increments the loop counter, and updates investigation status.
-    """
     current_loops = state.get("planner_loop_count", 0)
-    
-    # Exit immediately if the loop counter has already reached the maximum allowed loops
+
     if current_loops >= MAX_PLANNER_LOOPS:
         return {
             "pending_tasks": [],
-            "status": "MAX_LOOPS_REACHED"
+            "status": "MAX_LOOPS_REACHED",
         }
-        
-    planner = PlannerAgent()
-    new_tasks = planner.plan(state)
-    
-    # Increment loop counter
+
+    new_tasks = PlannerAgent().plan(state)
     current_loops += 1
-    
-    # Update pending tasks list
+
     existing_pending = state.get("pending_tasks") or []
     updated_pending = existing_pending + new_tasks
-    
-    # Determine the status based on loops and new tasks
+
     if current_loops >= MAX_PLANNER_LOOPS:
         status = "MAX_LOOPS_REACHED"
     elif new_tasks:
@@ -37,5 +76,5 @@ def planner_node(state: InvestigationState) -> dict:
     return {
         "pending_tasks": updated_pending,
         "planner_loop_count": current_loops,
-        "status": status
+        "status": status,
     }

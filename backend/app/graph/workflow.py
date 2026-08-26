@@ -1,25 +1,25 @@
-from langgraph.graph import StateGraph, END
-from app.graph.state import InvestigationState
-from app.graph.nodes import planner_node
-from app.graph.edges import should_continue
+from langgraph.graph import END, StateGraph
 
-# Initialize StateGraph with our custom InvestigationState structure
+from app.graph.edges import should_continue
+from app.graph.nodes import discovery_node, intake_node, planner_node
+from app.graph.state import InvestigationState
+
+
 workflow = StateGraph(InvestigationState)
 
-# Add the planner node
+workflow.add_node("intake", intake_node)
+workflow.add_node("discovery", discovery_node)
 workflow.add_node("planner", planner_node)
 
-# Set the entry point of the graph to be the planner
-workflow.set_entry_point("planner")
+workflow.set_entry_point("intake")
 
-# Add conditional routing from the planner node
+workflow.add_edge("intake", "discovery")
+workflow.add_edge("discovery", "planner")
+
 workflow.add_conditional_edges(
     "planner",
     should_continue,
-    {
-        "__end__": END
-    }
+    {"__end__": END},
 )
 
-# Compile the graph
 app = workflow.compile()
