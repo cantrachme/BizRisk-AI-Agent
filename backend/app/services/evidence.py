@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
@@ -14,6 +14,7 @@ def save_research_result(
     db: Session,
     result: ResearchResult,
     investigation_id: uuid.UUID,
+    commit: bool = True,
 ) -> Optional[Evidence]:
     """
     Validates a ResearchResult and persists it to the database under the given investigation_id.
@@ -24,11 +25,17 @@ def save_research_result(
         return None
 
     # Parse retrieved_at to datetime object
+    retrieved_at = result.retrieved_at or ""
+    if retrieved_at.endswith("Z"):
+        retrieved_at = retrieved_at.replace("Z", "+00:00")
+
     try:
-        retrieved_dt = datetime.fromisoformat(result.retrieved_at)
+        retrieved_dt = datetime.fromisoformat(retrieved_at)
     except ValueError:
-        # Fallback to parsing ISO formats with timezone offsets or generic string datetime
-        retrieved_dt = datetime.now()
+        retrieved_dt = datetime.now(timezone.utc)
+
+    if retrieved_dt.tzinfo is None:
+        retrieved_dt = retrieved_dt.replace(tzinfo=timezone.utc)
 
     # Serialize field_value to string if it is not already a string
     val = result.field_value
@@ -49,8 +56,9 @@ def save_research_result(
         confidence=result.confidence,
     )
     db.add(evidence)
-    db.commit()
-    db.refresh(evidence)
+    if commit:
+        db.commit()
+        db.refresh(evidence)
     return evidence
 
 

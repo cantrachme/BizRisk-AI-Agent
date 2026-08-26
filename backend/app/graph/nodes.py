@@ -130,7 +130,10 @@ def browser_node(state: InvestigationState) -> dict:
             from app.services.evidence import save_research_result
             with SessionLocal() as db:
                 for res in new_results:
-                    save_research_result(db, res, investigation_id)
+                    save_research_result(
+                        db, res, investigation_id, commit=False
+                    )
+                db.commit()
         except ValueError:
             pass
 

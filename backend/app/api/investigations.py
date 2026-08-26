@@ -92,6 +92,7 @@ def get_investigation_evidence(
             "source_name": ev.source_name,
             "source_url": ev.source_url,
             "retrieved_timestamp": ev.retrieved_timestamp,
+            "confidence": ev.confidence,
             "created_timestamp": ev.created_timestamp,
         }
         for ev in evidences

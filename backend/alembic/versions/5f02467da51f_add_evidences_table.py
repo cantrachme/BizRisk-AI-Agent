@@ -35,8 +35,18 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['investigation_id'], ['investigations.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_index(
+        op.f('ix_evidences_investigation_id'),
+        'evidences',
+        ['investigation_id'],
+        unique=False
+    )
 
 
 def downgrade() -> None:
     """Downgrade schema."""
+    op.drop_index(
+        op.f('ix_evidences_investigation_id'),
+        table_name='evidences'
+    )
     op.drop_table('evidences')

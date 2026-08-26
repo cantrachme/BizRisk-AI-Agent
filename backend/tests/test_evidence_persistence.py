@@ -1,7 +1,6 @@
 import os
 import sys
 import uuid
-from datetime import datetime
 from unittest.mock import patch
 
 import pytest
@@ -292,6 +291,7 @@ def test_get_investigation_evidence_api(db_session, investigation_id):
     assert len(data) == 1
     assert data[0]["research_result_id"] == "RES-003"
     assert data[0]["field_value"] == "Active"
+    assert data[0]["confidence"] == 0.95
 
     # Clean up overrides
     app.dependency_overrides.clear()
