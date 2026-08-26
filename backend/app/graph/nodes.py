@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import uuid
 
 from app.agents.discovery import DiscoveryAgent
 from app.agents.intake import IntakeAgent
@@ -45,6 +46,17 @@ def discovery_node(state: InvestigationState) -> dict:
             for candidate in candidates
         ),
     )
+
+    investigation_id_str = state.get("investigation_id")
+    if investigation_id_str:
+        try:
+            investigation_id = uuid.UUID(str(investigation_id_str))
+            from app.db.session import SessionLocal
+            from app.services.evidence import save_research_result
+            with SessionLocal() as db:
+                save_research_result(db, result, investigation_id)
+        except ValueError:
+            pass
 
     return {
         "results": [result],
@@ -94,6 +106,7 @@ def browser_node(state: InvestigationState) -> dict:
     completed_tasks = list(existing_completed)
     failed_tasks = list(existing_failed)
     results = list(existing_results)
+    new_results = []
 
     for task in pending_tasks:
         task_results = agent.execute(task)
@@ -103,10 +116,22 @@ def browser_node(state: InvestigationState) -> dict:
                 task.model_copy(update={"status": "COMPLETED"})
             )
             results.extend(task_results)
+            new_results.extend(task_results)
         else:
             failed_tasks.append(
                 task.model_copy(update={"status": "FAILED"})
             )
+
+    investigation_id_str = state.get("investigation_id")
+    if investigation_id_str and new_results:
+        try:
+            investigation_id = uuid.UUID(str(investigation_id_str))
+            from app.db.session import SessionLocal
+            from app.services.evidence import save_research_results
+            with SessionLocal() as db:
+                save_research_results(db, new_results, investigation_id)
+        except ValueError:
+            pass
 
     return {
         "pending_tasks": [],

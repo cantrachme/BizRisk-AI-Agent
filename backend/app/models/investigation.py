@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime
+from typing import List
 
 from sqlalchemy import DateTime, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
@@ -27,4 +28,9 @@ class Investigation(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+    evidences: Mapped[List["Evidence"]] = relationship(
+        back_populates="investigation",
+        cascade="all, delete-orphan",
     )
