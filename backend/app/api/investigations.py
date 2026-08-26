@@ -231,3 +231,37 @@ def get_investigation_qa(
         )
 
     return qa_result
+
+
+@router.get("/{investigation_id}/events")
+def get_investigation_events(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> list:
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found.",
+        )
+
+    from app.models.investigation_event import InvestigationEvent
+    events = (
+        db.query(InvestigationEvent)
+        .filter(InvestigationEvent.investigation_id == investigation_id)
+        .order_by(InvestigationEvent.created_at.asc())
+        .all()
+    )
+
+    return [
+        {
+            "id": str(evt.id),
+            "investigation_id": str(evt.investigation_id),
+            "event_type": evt.event_type,
+            "node": evt.node,
+            "status": evt.status,
+            "metadata": json.loads(evt.metadata_json),
+            "created_at": evt.created_at.isoformat() if evt.created_at else None,
+        }
+        for evt in events
+    ]

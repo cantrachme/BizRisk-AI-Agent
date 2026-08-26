@@ -45,12 +45,17 @@ class Investigation(Base):
         cascade="all, delete-orphan",
     )
 
-    risk_signals: Mapped[List["RiskSignal"]] = relationship(
+    reports: Mapped[List["Report"]] = relationship(
         back_populates="investigation",
         cascade="all, delete-orphan",
     )
 
-    reports: Mapped[List["Report"]] = relationship(
+    events: Mapped[List["InvestigationEvent"]] = relationship(
+        back_populates="investigation",
+        cascade="all, delete-orphan",
+    )
+
+    risk_signals: Mapped[List["RiskSignal"]] = relationship(
         back_populates="investigation",
         cascade="all, delete-orphan",
     )
