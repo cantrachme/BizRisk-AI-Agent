@@ -10,6 +10,7 @@ from app.graph.state import (
     MAX_PLANNER_LOOPS,
     ResearchResult,
 )
+from app.core.exceptions import HumanInterventionRequiredException
 
 
 def update_investigation_in_db(
@@ -86,6 +87,9 @@ def intake_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "intake", "STARTED")
 
     try:
+        if state.get("status") in {"DISCOVERY_COMPLETED", "PENDING_RESEARCH", "WAITING_FOR_USER", "LIMIT_REACHED", "MAX_LOOPS_REACHED"}:
+            return state
+
         normalized_input = IntakeAgent().process(state.get("raw_input") or {})
         update_investigation_in_db(state.get("investigation_id"), "intake", status="NORMALIZED")
         log_node_event(investigation_id, "NODE_COMPLETED", "intake", "COMPLETED")
@@ -142,6 +146,9 @@ def discovery_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "discovery", "STARTED")
 
     try:
+        if state.get("status") in {"DISCOVERY_COMPLETED", "PENDING_RESEARCH", "WAITING_FOR_USER", "LIMIT_REACHED", "MAX_LOOPS_REACHED"}:
+            return state
+
         from app.core.tracking import (
             init_tracking_from_state,
             update_state_from_tracking,
@@ -275,6 +282,9 @@ def planner_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "planner", "STARTED")
 
     try:
+        if state.get("pending_tasks") and state.get("status") != "FAILED_QA":
+            return state
+
         from app.core.tracking import (
             init_tracking_from_state,
             update_state_from_tracking,
@@ -434,8 +444,19 @@ def browser_node(state: InvestigationState) -> dict:
 
         remaining_pending = []
         limit_reached = False
+        hitl_blocked = False
+        hitl_reason = None
+        blocked_sources = set()
 
         for task in pending_tasks:
+            # Resolve task source using browser agent helper
+            source_key = BrowserResearchAgent._select_source(task)
+
+            # Skip execution if the source/domain is already blocked by human verification requirement
+            if source_key and source_key in blocked_sources:
+                remaining_pending.append(task)
+                continue
+
             if limit_reached:
                 remaining_pending.append(task)
                 continue
@@ -448,8 +469,6 @@ def browser_node(state: InvestigationState) -> dict:
                 from app.agents.browser import SOURCES
                 import json
 
-                # Resolve task source using browser agent helper
-                source_key = BrowserResearchAgent._select_source(task)
                 source = None
                 if source_key:
                     if source_key in SOURCES:
@@ -531,34 +550,65 @@ def browser_node(state: InvestigationState) -> dict:
                     with SessionLocal() as db:
                         update_research_task_status(db, investigation_id, task.task_id, "STARTED")
 
-                task_results = agent.execute(task)
+                try:
+                    task_results = agent.execute(task)
+                    if task_results:
+                        completed_tasks.append(
+                            task.model_copy(update={"status": "COMPLETED"})
+                        )
+                        results.extend(task_results)
+                        new_results.extend(task_results)
+                        if investigation_id:
+                            from app.db.session import SessionLocal
+                            from app.services.research_task import update_research_task_status
+                            with SessionLocal() as db:
+                                update_research_task_status(db, investigation_id, task.task_id, "COMPLETED")
+                    else:
+                        failed_tasks.append(
+                            task.model_copy(update={"status": "FAILED"})
+                        )
+                        if investigation_id:
+                            from app.db.session import SessionLocal
+                            from app.services.research_task import update_research_task_status
+                            with SessionLocal() as db:
+                                update_research_task_status(
+                                    db,
+                                    investigation_id,
+                                    task.task_id,
+                                    "FAILED",
+                                    error="No results returned"
+                                )
+                except HumanInterventionRequiredException as hitl_ex:
+                    hitl_blocked = True
+                    hitl_reason = hitl_ex.message
+                    if source_key:
+                        blocked_sources.add(source_key)
 
-                if task_results:
-                    completed_tasks.append(
-                        task.model_copy(update={"status": "COMPLETED"})
-                    )
-                    results.extend(task_results)
-                    new_results.extend(task_results)
                     if investigation_id:
                         from app.db.session import SessionLocal
                         from app.services.research_task import update_research_task_status
-                        with SessionLocal() as db:
-                            update_research_task_status(db, investigation_id, task.task_id, "COMPLETED")
-                else:
-                    failed_tasks.append(
-                        task.model_copy(update={"status": "FAILED"})
-                    )
-                    if investigation_id:
-                        from app.db.session import SessionLocal
-                        from app.services.research_task import update_research_task_status
+                        from app.services.audit import record_event
                         with SessionLocal() as db:
                             update_research_task_status(
                                 db,
                                 investigation_id,
                                 task.task_id,
-                                "FAILED",
-                                error="No results returned"
+                                "HUMAN_INTERVENTION_REQUIRED",
+                                error=hitl_ex.message,
+                                intervention_type=hitl_ex.intervention_type,
+                                intervention_reason=hitl_ex.message
                             )
+                            record_event(
+                                db,
+                                investigation_id,
+                                "HUMAN_INTERVENTION_REQUIRED",
+                                "browser",
+                                "WAITING_FOR_USER",
+                                {"task_id": task.task_id, "type": hitl_ex.intervention_type, "reason": hitl_ex.message}
+                            )
+
+                    blocked_task = task.model_copy(update={"status": "HUMAN_INTERVENTION_REQUIRED"})
+                    remaining_pending.append(blocked_task)
 
         if investigation_id_str and new_results:
             try:
@@ -574,7 +624,9 @@ def browser_node(state: InvestigationState) -> dict:
         updated_state = update_state_from_tracking(state)
 
         # Decide browser node return status
-        if updated_state.get("stop_reason") or updated_state.get("status") == "LIMIT_REACHED":
+        if hitl_blocked:
+            status = "WAITING_FOR_USER"
+        elif updated_state.get("stop_reason") or updated_state.get("status") == "LIMIT_REACHED":
             status = "LIMIT_REACHED"
         else:
             status = "RESEARCH_COMPLETED"
@@ -589,11 +641,23 @@ def browser_node(state: InvestigationState) -> dict:
             "results": results,
             "status": status,
         })
+        if hitl_reason:
+            updated_state["stop_reason"] = hitl_reason
         return updated_state
     except Exception as e:
         err_msg = str(e)
         from app.core.tracking import update_state_from_tracking
         updated_state = update_state_from_tracking(state)
+
+        if isinstance(e, HumanInterventionRequiredException):
+            update_investigation_in_db(investigation_id_str, "browser", status="WAITING_FOR_USER")
+            log_node_event(investigation_id, "NODE_COMPLETED", "browser_research", "WAITING_FOR_USER", {"reason": err_msg})
+            updated_state.update({
+                "status": "WAITING_FOR_USER",
+                "stop_reason": err_msg,
+            })
+            return updated_state
+
         if "limit reached" in err_msg.lower() or "budget exhausted" in err_msg.lower():
             update_investigation_in_db(investigation_id_str, "browser", status="LIMIT_REACHED")
             log_node_event(investigation_id, "NODE_COMPLETED", "browser_research", "LIMIT_REACHED", {"reason": err_msg})
@@ -646,6 +710,9 @@ def entity_resolution_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "entity_resolution", "STARTED")
 
     try:
+        if state.get("status") == "WAITING_FOR_USER":
+            return state
+
         from app.core.tracking import (
             init_tracking_from_state,
             update_state_from_tracking,
@@ -783,6 +850,9 @@ def risk_analysis_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "risk_analysis", "STARTED")
 
     try:
+        if state.get("status") == "WAITING_FOR_USER":
+            return state
+
         from app.core.tracking import (
             init_tracking_from_state,
             update_state_from_tracking,
@@ -874,6 +944,9 @@ def report_generation_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "report_generation", "STARTED")
 
     try:
+        if state.get("status") == "WAITING_FOR_USER":
+            return state
+
         from app.core.tracking import (
             init_tracking_from_state,
             update_state_from_tracking,
@@ -1001,6 +1074,9 @@ def qa_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "qa", "STARTED")
 
     try:
+        if state.get("status") == "WAITING_FOR_USER":
+            return state
+
         from app.core.tracking import (
             init_tracking_from_state,
             update_state_from_tracking,

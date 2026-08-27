@@ -48,6 +48,8 @@ def save_research_tasks(
             existing.completed_at = None
             existing.error_info = None
             existing.result_info = None
+            existing.intervention_type = None
+            existing.intervention_reason = None
             persisted.append(existing)
         else:
             new_task = ResearchTaskModel(
@@ -75,6 +77,8 @@ def update_research_task_status(
     status: str,
     error: Optional[str] = None,
     result: Optional[str] = None,
+    intervention_type: Optional[str] = None,
+    intervention_reason: Optional[str] = None,
 ) -> Optional[ResearchTaskModel]:
     """
     Updates the execution status, attempt timestamps, and metadata of a persistent research task.
@@ -102,6 +106,13 @@ def update_research_task_status(
         task.completed_at = now
         if error:
             task.error_info = error
+    elif status == "HUMAN_INTERVENTION_REQUIRED":
+        if error:
+            task.error_info = error
+        if intervention_type:
+            task.intervention_type = intervention_type
+        if intervention_reason:
+            task.intervention_reason = intervention_reason
 
     db.commit()
     db.refresh(task)

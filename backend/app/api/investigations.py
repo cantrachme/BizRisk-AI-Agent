@@ -271,3 +271,203 @@ def get_investigation_events(
         }
         for evt in events
     ]
+
+
+@router.get("/{investigation_id}/human-intervention")
+def get_human_intervention_status(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> dict:
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found.",
+        )
+
+    from app.models.research_task import ResearchTask as ResearchTaskModel
+    pending_intervention = (
+        db.query(ResearchTaskModel)
+        .filter(
+            ResearchTaskModel.investigation_id == investigation_id,
+            ResearchTaskModel.status == "HUMAN_INTERVENTION_REQUIRED",
+        )
+        .all()
+    )
+
+    return {
+        "investigation_id": str(investigation_id),
+        "status": investigation.status,
+        "pending_tasks": [
+            {
+                "id": str(t.id),
+                "task_id": t.task_id,
+                "task_type": t.task_type,
+                "target": t.target,
+                "objective": t.objective,
+                "status": t.status,
+                "intervention_type": t.intervention_type,
+                "intervention_reason": t.intervention_reason,
+            }
+            for t in pending_intervention
+        ]
+    }
+
+
+@router.post("/{investigation_id}/resume")
+def resume_investigation(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> dict:
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found.",
+        )
+
+    from app.models.research_task import ResearchTask as ResearchTaskModel
+    from app.services.audit import record_event
+
+    # 1. Fetch blocked tasks and set status to PENDING, clear intervention reason/type
+    blocked_tasks = (
+        db.query(ResearchTaskModel)
+        .filter(
+            ResearchTaskModel.investigation_id == investigation_id,
+            ResearchTaskModel.status == "HUMAN_INTERVENTION_REQUIRED",
+        )
+        .all()
+    )
+
+    for t in blocked_tasks:
+        t.status = "PENDING"
+        t.intervention_type = None
+        t.intervention_reason = None
+        t.started_at = None
+        t.completed_at = None
+
+    # 2. Update investigation status to PENDING_RESEARCH
+    investigation.status = "PENDING_RESEARCH"
+    db.commit()
+
+    # 3. Log INVESTIGATION_RESUMED event
+    record_event(
+        db,
+        investigation_id,
+        "INVESTIGATION_RESUMED",
+        "browser",
+        "STARTED",
+        {"resumed_tasks_count": len(blocked_tasks)}
+    )
+
+    # 4. Reconstruct graph state and trigger execution
+    from app.graph.workflow import app as graph_app
+    from app.services.research_task import get_research_tasks_for_investigation
+    from app.services.evidence import get_evidences_for_investigation
+    from app.graph.state import ResearchTask as GraphTask, ResearchResult as GraphResult
+
+    tasks_db = get_research_tasks_for_investigation(db, investigation_id)
+    evidences_db = get_evidences_for_investigation(db, investigation_id)
+
+    pending_tasks = []
+    completed_tasks = []
+    failed_tasks = []
+
+    def get_fields_for_task_type(task_type: str) -> list:
+        if task_type == "ENTITY_DISCOVERY":
+            return ["candidate_entities"]
+        elif task_type == "GST_VERIFICATION":
+            return ["legal_name", "gst_status", "registered_address", "business_activity"]
+        elif task_type == "MCA_VERIFICATION":
+            return ["legal_name", "company_status", "incorporation_date", "registered_address"]
+        elif task_type == "WEBSITE_VERIFICATION":
+            return ["website_status", "contact_address", "established_year"]
+        else:
+            return ["page_text"]
+
+    def get_preferred_sources_for_task_type(task_type: str) -> list:
+        if task_type == "GST_VERIFICATION":
+            return ["gst.gov.in"]
+        elif task_type == "MCA_VERIFICATION":
+            return ["mca.gov.in"]
+        elif task_type == "WEBSITE_VERIFICATION":
+            return ["company_website"]
+        else:
+            return ["generic_web"]
+
+    def get_fallback_sources_for_task_type(task_type: str) -> list:
+        if task_type in {"GST_VERIFICATION", "MCA_VERIFICATION"}:
+            return ["third_party"]
+        elif task_type == "WEBSITE_VERIFICATION":
+            return ["generic_web"]
+        else:
+            return []
+
+    def get_priority_for_task_type(task_type: str) -> int:
+        if task_type == "WEBSITE_VERIFICATION":
+            return 2
+        return 1
+
+    for t in tasks_db:
+        gt = GraphTask(
+            task_id=t.task_id,
+            task_type=t.task_type,
+            target=t.target,
+            objective=t.objective,
+            status=t.status,
+            priority=get_priority_for_task_type(t.task_type),
+            required_fields=get_fields_for_task_type(t.task_type),
+            preferred_sources=get_preferred_sources_for_task_type(t.task_type),
+            fallback_sources=get_fallback_sources_for_task_type(t.task_type),
+        )
+        if t.status == "COMPLETED":
+            completed_tasks.append(gt)
+        elif t.status == "FAILED":
+            failed_tasks.append(gt)
+        else:
+            pending_tasks.append(gt)
+
+    results = []
+    for ev in evidences_db:
+        results.append(
+            GraphResult(
+                result_id=ev.research_result_id or f"RESULT-{ev.task_id}-001",
+                task_id=ev.task_id,
+                field_name=ev.field_name,
+                field_value=ev.field_value,
+                source_name=ev.source_name,
+                source_url=ev.source_url,
+                retrieved_at=ev.retrieved_timestamp.isoformat() if ev.retrieved_timestamp else "",
+                confidence=ev.confidence,
+            )
+        )
+
+    raw_input = json.loads(investigation.input_data)
+
+    state = {
+        "investigation_id": str(investigation_id),
+        "raw_input": raw_input,
+        "normalized_input": {},
+        "pending_tasks": pending_tasks,
+        "completed_tasks": completed_tasks,
+        "failed_tasks": failed_tasks,
+        "results": results,
+        "planner_loop_count": investigation.retry_count,
+        "status": "PENDING_RESEARCH",
+        "research_depth": 0,
+        "browser_actions": 0,
+        "browser_tasks_count": 0,
+        "llm_calls": 0,
+        "token_usage": 0,
+        "stop_reason": None,
+    }
+
+    # Execute graph
+    graph_app.invoke(state)
+
+    # Return updated investigation status
+    db.refresh(investigation)
+    return {
+        "id": str(investigation.id),
+        "status": investigation.status,
+    }

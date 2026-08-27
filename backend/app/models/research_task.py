@@ -32,6 +32,8 @@ class ResearchTask(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     result_info: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     error_info: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    intervention_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    intervention_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Relationships
     investigation = relationship("Investigation", back_populates="research_tasks")
