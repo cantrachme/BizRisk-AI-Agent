@@ -72,7 +72,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   // Investigations List
-  getInvestigations: () => request<InvestigationListItem[]>('/investigations'),
+  getInvestigations: () => request<InvestigationListItem[]>('/investigations/'),
   getIncompleteInvestigations: () => request<InvestigationListItem[]>('/investigations/incomplete'),
   
   // Investigation Detail
