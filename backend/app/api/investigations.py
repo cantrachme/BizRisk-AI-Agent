@@ -31,6 +31,9 @@ def create_investigation(
 
     investigation = Investigation(
         input_data=payload.model_dump_json(),
+        user_id=payload.user_id,
+        raw_input=payload.model_dump_json(),
+        status="created",
     )
 
     db.add(investigation)
@@ -41,6 +44,30 @@ def create_investigation(
         "id": str(investigation.id),
         "status": investigation.status,
     }
+
+
+@router.get("/incomplete")
+def list_incomplete_investigations(
+    db: Session = Depends(get_db),
+) -> list:
+    from app.models.investigation import Investigation
+    incomplete = (
+        db.query(Investigation)
+        .filter(
+            Investigation.completed_timestamp.is_(None),
+            Investigation.status.notin_(["COMPLETED", "FAILED"])
+        )
+        .all()
+    )
+    return [
+        {
+            "id": str(inv.id),
+            "status": inv.status,
+            "current_node": inv.current_node,
+            "created_at": inv.created_at.isoformat() if inv.created_at else None,
+        }
+        for inv in incomplete
+    ]
 
 
 @router.get("/{investigation_id}")
@@ -66,7 +93,7 @@ def get_investigation(
         "risk_level": investigation.risk_level,
         "resolved_entity_id": str(investigation.resolved_entity_id) if investigation.resolved_entity_id else None,
         "entity_confidence": investigation.entity_confidence,
-        "completed_at": investigation.completed_at,
+        "completed_at": investigation.completed_timestamp,
         "created_at": investigation.created_at,
         "updated_at": investigation.updated_at,
     }
@@ -362,105 +389,10 @@ def resume_investigation(
 
     # 4. Reconstruct graph state and trigger execution
     from app.graph.workflow import app as graph_app
-    from app.services.research_task import get_research_tasks_for_investigation
-    from app.services.evidence import get_evidences_for_investigation
-    from app.graph.state import ResearchTask as GraphTask, ResearchResult as GraphResult
+    from app.services.investigation import recover_investigation_state
 
-    tasks_db = get_research_tasks_for_investigation(db, investigation_id)
-    evidences_db = get_evidences_for_investigation(db, investigation_id)
-
-    pending_tasks = []
-    completed_tasks = []
-    failed_tasks = []
-
-    def get_fields_for_task_type(task_type: str) -> list:
-        if task_type == "ENTITY_DISCOVERY":
-            return ["candidate_entities"]
-        elif task_type == "GST_VERIFICATION":
-            return ["legal_name", "gst_status", "registered_address", "business_activity"]
-        elif task_type == "MCA_VERIFICATION":
-            return ["legal_name", "company_status", "incorporation_date", "registered_address"]
-        elif task_type == "WEBSITE_VERIFICATION":
-            return ["website_status", "contact_address", "established_year"]
-        else:
-            return ["page_text"]
-
-    def get_preferred_sources_for_task_type(task_type: str) -> list:
-        if task_type == "GST_VERIFICATION":
-            return ["gst.gov.in"]
-        elif task_type == "MCA_VERIFICATION":
-            return ["mca.gov.in"]
-        elif task_type == "WEBSITE_VERIFICATION":
-            return ["company_website"]
-        else:
-            return ["generic_web"]
-
-    def get_fallback_sources_for_task_type(task_type: str) -> list:
-        if task_type in {"GST_VERIFICATION", "MCA_VERIFICATION"}:
-            return ["third_party"]
-        elif task_type == "WEBSITE_VERIFICATION":
-            return ["generic_web"]
-        else:
-            return []
-
-    def get_priority_for_task_type(task_type: str) -> int:
-        if task_type == "WEBSITE_VERIFICATION":
-            return 2
-        return 1
-
-    for t in tasks_db:
-        gt = GraphTask(
-            task_id=t.task_id,
-            task_type=t.task_type,
-            target=t.target,
-            objective=t.objective,
-            status=t.status,
-            priority=get_priority_for_task_type(t.task_type),
-            required_fields=get_fields_for_task_type(t.task_type),
-            preferred_sources=get_preferred_sources_for_task_type(t.task_type),
-            fallback_sources=get_fallback_sources_for_task_type(t.task_type),
-        )
-        if t.status == "COMPLETED":
-            completed_tasks.append(gt)
-        elif t.status == "FAILED":
-            failed_tasks.append(gt)
-        else:
-            pending_tasks.append(gt)
-
-    results = []
-    for ev in evidences_db:
-        results.append(
-            GraphResult(
-                result_id=ev.research_result_id or f"RESULT-{ev.task_id}-001",
-                task_id=ev.task_id,
-                field_name=ev.field_name,
-                field_value=ev.field_value,
-                source_name=ev.source_name,
-                source_url=ev.source_url,
-                retrieved_at=ev.retrieved_timestamp.isoformat() if ev.retrieved_timestamp else "",
-                confidence=ev.confidence,
-            )
-        )
-
-    raw_input = json.loads(investigation.input_data)
-
-    state = {
-        "investigation_id": str(investigation_id),
-        "raw_input": raw_input,
-        "normalized_input": {},
-        "pending_tasks": pending_tasks,
-        "completed_tasks": completed_tasks,
-        "failed_tasks": failed_tasks,
-        "results": results,
-        "planner_loop_count": investigation.retry_count,
-        "status": "PENDING_RESEARCH",
-        "research_depth": 0,
-        "browser_actions": 0,
-        "browser_tasks_count": 0,
-        "llm_calls": 0,
-        "token_usage": 0,
-        "stop_reason": None,
-    }
+    state = recover_investigation_state(db, investigation_id)
+    state["status"] = "PENDING_RESEARCH"
 
     # Execute graph
     graph_app.invoke(state)

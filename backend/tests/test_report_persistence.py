@@ -225,7 +225,7 @@ def test_graph_workflow_completion_sets_completed_at(db_session, investigation_i
 
     inv = db_session.get(Investigation, investigation_id)
     assert inv.status == "COMPLETED"
-    assert inv.completed_at is not None
+    assert inv.completed_timestamp is not None
 
 
 # 12. API returns latest persisted report & 13. API returns report history

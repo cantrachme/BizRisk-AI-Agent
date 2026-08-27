@@ -8,3 +8,4 @@ class InvestigationCreate(BaseModel):
     website: str | None = Field(default=None, max_length=500)
     location: str | None = Field(default=None, max_length=255)
     additional_information: str | None = None
+    user_id: str | None = Field(default=None, max_length=100)

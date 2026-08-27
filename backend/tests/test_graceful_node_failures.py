@@ -110,7 +110,7 @@ def test_node_failure_persistence_and_logging(db_session, investigation_id):
     inv = db_session.get(Investigation, investigation_id)
     assert inv.status == "FAILED"
     assert inv.current_node == "discovery"
-    assert inv.completed_at is not None
+    assert inv.completed_timestamp is not None
 
     # Verify audit events are created
     events = db_session.query(InvestigationEvent).filter(InvestigationEvent.investigation_id == investigation_id).all()
@@ -222,7 +222,7 @@ def test_successful_run_and_no_duplicate_failure_events(db_session, investigatio
     db_session.expire_all()
     inv = db_session.get(Investigation, investigation_id)
     assert inv.status == "COMPLETED" or inv.status == "REPORT_GENERATED" or inv.status == "COMPLETED_QA"
-    assert inv.completed_at is not None
+    assert inv.completed_timestamp is not None
 
     # Verify no NODE_FAILED or INVESTIGATION_FAILED events are logged for this successful run
     events = db_session.query(InvestigationEvent).filter(InvestigationEvent.investigation_id == investigation_id).all()
