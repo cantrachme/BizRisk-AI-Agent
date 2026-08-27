@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     llm_timeout: float = 30.0
     llm_retry_policy: str = '{"max_retries": 3, "backoff_factor": 2}'
 
+    evidence_freshness_gst_days: int = 7
+    evidence_freshness_mca_days: int = 30
+    evidence_freshness_website_days: int = 30
+    evidence_freshness_default_days: int = 30
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
