@@ -28,6 +28,15 @@ class Evidence(Base):
         nullable=False,
     )
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    verification_status: Mapped[Optional[str]] = mapped_column(
+        String(50),
+        nullable=True,
+        default="UNVERIFIED",
+    )
+    research_task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("research_tasks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -35,3 +44,4 @@ class Evidence(Base):
     )
 
     investigation = relationship("Investigation", back_populates="evidences")
+    research_task = relationship("ResearchTask", back_populates="evidences")
