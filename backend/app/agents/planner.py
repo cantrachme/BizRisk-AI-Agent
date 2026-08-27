@@ -8,8 +8,12 @@ class PlannerAgent:
     Evaluates the current state (inputs and results collected so far) and determines
     what missing or unverified research requirements need to be scheduled.
     """
-    def __init__(self) -> None:
-        pass
+    def __init__(self, llm=None, prompt_version: str = "v1") -> None:
+        from app.core.llm import get_llm_provider
+        from app.core.prompts import load_prompt
+        self.llm = llm or get_llm_provider(temperature=0.0)
+        self.prompt_version = prompt_version
+        self.prompt = load_prompt("planner", prompt_version)
 
     def plan(self, state: InvestigationState) -> List[ResearchTask]:
         # Initialize lists from state

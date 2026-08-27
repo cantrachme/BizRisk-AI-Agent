@@ -13,7 +13,13 @@ from app.services.risk_analysis import analyze_investigation
 def validate_report(
     db: Session,
     investigation_id: uuid.UUID,
+    llm=None,
+    prompt_version: str = "v1",
 ) -> Dict[str, Any]:
+    from app.core.llm import get_llm_provider
+    from app.core.prompts import load_prompt
+    resolved_llm = llm or get_llm_provider(temperature=0.0)
+    prompt = load_prompt("qa", prompt_version)
     """
     Validates a structured report against persisted database evidences and deterministic risk scoring outcomes.
     """

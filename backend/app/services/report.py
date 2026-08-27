@@ -27,7 +27,15 @@ def generate_recommendation(score: int) -> str:
 def generate_investigation_report(
     db: Session,
     investigation_id: uuid.UUID,
+    llm=None,
+    prompt_version: str = "v1",
 ) -> Dict[str, Any]:
+    from app.core.llm import get_llm_provider
+    from app.core.prompts import load_prompt
+    from app.core.config import get_settings
+    resolved_llm = llm or get_llm_provider(temperature=0.2)
+    prompt = load_prompt("report", prompt_version)
+    settings = get_settings()
     """
     Generates a structured, evidence-backed report for the given investigation_id.
     """
@@ -121,6 +129,16 @@ def generate_investigation_report(
         "meta": {
             "rule_version": "1.0.0",
             "report_version": "1.0.0",
+            "prompt_version": {
+                "intake": "v1",
+                "discovery": "v1",
+                "planner": "v1",
+                "entity_resolution": "v1",
+                "risk_analysis": "v1",
+                "report": prompt_version,
+                "qa": "v1",
+            },
+            "model_version": resolved_llm.model if hasattr(resolved_llm, "model") else settings.llm_model,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
     }

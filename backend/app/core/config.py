@@ -12,6 +12,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://bizrisk:bizrisk@localhost:5432/bizrisk"
     redis_url: str = "redis://localhost:6379/0"
 
+    llm_provider: str = "mock"
+    llm_model: str = "gemini-1.5-pro"
+    llm_temperature: float = 0.0
+    llm_token_limit: int = 4096
+    llm_timeout: float = 30.0
+    llm_retry_policy: str = '{"max_retries": 3, "backoff_factor": 2}'
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
