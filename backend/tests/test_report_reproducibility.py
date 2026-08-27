@@ -220,11 +220,12 @@ def test_metadata_preservation(db_session, investigation_id):
 
 # 4. Concurrent Report Generation Safety
 def test_concurrent_generation_safety(db_session, investigation_id):
-    res = make_test_result(result_id="RES-CONC", field_name="gst_status", field_value="Active")
-    save_research_result(db_session, res, investigation_id)
-
     # Use thread-local Session Local factory for thread safety
     SessionLocal = sessionmaker(bind=db_session.bind)
+
+    res = make_test_result(result_id="RES-CONC", field_name="gst_status", field_value="Active")
+    with SessionLocal() as db:
+        save_research_result(db, res, investigation_id)
 
     # Launch 5 concurrent report generations for the same investigation
     def run_gen():

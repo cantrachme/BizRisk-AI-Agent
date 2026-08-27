@@ -18,7 +18,7 @@ class Investigation(Base):
         nullable=False,
     )
     input_data: Mapped[str] = mapped_column(Text, nullable=False)
-    user_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     raw_input: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     normalized_input: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     current_graph_node: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
