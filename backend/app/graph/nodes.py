@@ -319,41 +319,58 @@ def browser_node(state: InvestigationState) -> dict:
             reused_results = []
             if investigation_id:
                 from app.db.session import SessionLocal
-                from app.services.evidence import get_evidences_for_investigation, is_evidence_fresh
+                from app.services.evidence import get_cached_source_result
                 from app.graph.state import ResearchResult
+                from app.agents.browser import BrowserResearchAgent
                 import json
 
-                with SessionLocal() as db:
-                    db_evidences = get_evidences_for_investigation(db, investigation_id)
+                # Resolve task source using browser agent helper
+                source_key = BrowserResearchAgent._select_source(task)
+                source = None
+                if source_key:
+                    from app.agents.browser import SOURCES
+                    if source_key in SOURCES:
+                        source = SOURCES[source_key][0]
+                    else:
+                        source = source_key
 
                 all_fields_fresh = True
                 task_reused_results = []
 
-                for field in task.required_fields:
-                    field_evs = [ev for ev in db_evidences if ev.field_name == field]
-                    fresh_evs = [ev for ev in field_evs if is_evidence_fresh(ev.retrieved_timestamp, field)]
-                    if not fresh_evs:
-                        all_fields_fresh = False
-                        break
-                    else:
-                        for ev in fresh_evs:
-                            try:
-                                parsed_val = json.loads(ev.field_value)
-                            except Exception:
-                                parsed_val = ev.field_value
-
-                            task_reused_results.append(
-                                ResearchResult(
-                                    result_id=ev.research_result_id,
-                                    task_id=task.task_id,
-                                    field_name=ev.field_name,
-                                    field_value=parsed_val,
-                                    source_name=ev.source_name,
-                                    source_url=ev.source_url,
-                                    retrieved_at=ev.retrieved_timestamp.isoformat(),
-                                    confidence=ev.confidence,
-                                )
+                if source:
+                    with SessionLocal() as db:
+                        for field in task.required_fields:
+                            cached_ev = get_cached_source_result(
+                                db,
+                                task_type=task.task_type,
+                                target=task.target,
+                                objective=task.objective,
+                                field_name=field,
+                                source_name=source,
                             )
+                            if not cached_ev:
+                                all_fields_fresh = False
+                                break
+                            else:
+                                try:
+                                    parsed_val = json.loads(cached_ev.field_value)
+                                except Exception:
+                                    parsed_val = cached_ev.field_value
+
+                                task_reused_results.append(
+                                    ResearchResult(
+                                        result_id=cached_ev.research_result_id,
+                                        task_id=task.task_id,
+                                        field_name=cached_ev.field_name,
+                                        field_value=parsed_val,
+                                        source_name=cached_ev.source_name,
+                                        source_url=cached_ev.source_url,
+                                        retrieved_at=cached_ev.retrieved_timestamp.isoformat(),
+                                        confidence=cached_ev.confidence,
+                                    )
+                                )
+                else:
+                    all_fields_fresh = False
 
                 if all_fields_fresh and task_reused_results:
                     reused_results = task_reused_results
@@ -478,10 +495,20 @@ def entity_resolution_node(state: InvestigationState) -> dict:
             if result.field_name == "candidate_entities":
                 candidates.extend(result.field_value or [])
 
-        resolution = resolve_entity(
-            normalized_input,
-            candidates,
-        )
+        from app.core.caching import ResolvedEntityCache
+        cached_res = None
+        if investigation_id:
+            cached_res = ResolvedEntityCache.get(investigation_id, normalized_input)
+
+        if cached_res is not None:
+            resolution = cached_res
+        else:
+            resolution = resolve_entity(
+                normalized_input,
+                candidates,
+            )
+            if investigation_id:
+                ResolvedEntityCache.set(investigation_id, normalized_input, resolution)
 
         status = "ENTITY_RESOLVED" if resolution["matched"] else "ENTITY_UNRESOLVED"
         resolved_entity_id = None

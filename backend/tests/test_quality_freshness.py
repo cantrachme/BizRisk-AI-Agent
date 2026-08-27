@@ -257,6 +257,7 @@ def test_research_reuse_behavior(db_session, investigation_id):
         objective="Verify GSTIN-F status",
         required_fields=["gst_status"],
         priority=1,
+        preferred_sources=["gst.gov.in"],
     )
     save_research_tasks(db_session, [task], investigation_id)
 
@@ -285,7 +286,7 @@ def test_research_reuse_behavior(db_session, investigation_id):
     agent_mock = mock.Mock()
     
     with mock.patch("app.db.session.SessionLocal", MockSessionLocal), \
-         mock.patch("app.agents.browser.BrowserResearchAgent", return_value=agent_mock):
+         mock.patch("app.agents.browser.BrowserResearchAgent.execute", agent_mock.execute):
         out = browser_node(state)
 
     agent_mock.execute.assert_not_called()
@@ -314,6 +315,7 @@ def test_research_reuse_expired_or_incomplete_behavior(db_session, investigation
         objective="Verify GSTIN-EXP status",
         required_fields=["gst_status"],
         priority=1,
+        preferred_sources=["gst.gov.in"],
     )
     save_research_tasks(db_session, [task_expired], investigation_id)
 
@@ -355,7 +357,7 @@ def test_research_reuse_expired_or_incomplete_behavior(db_session, investigation
     agent_mock.execute.return_value = mock_new_res
 
     with mock.patch("app.db.session.SessionLocal", MockSessionLocal), \
-         mock.patch("app.agents.browser.BrowserResearchAgent", return_value=agent_mock):
+         mock.patch("app.agents.browser.BrowserResearchAgent.execute", agent_mock.execute):
         out = browser_node(state)
 
     agent_mock.execute.assert_called_once_with(task_expired)
@@ -382,6 +384,7 @@ def test_research_reuse_incomplete_behavior(db_session, investigation_id):
         objective="Verify GSTIN-INC status",
         required_fields=["gst_status", "legal_name"],
         priority=1,
+        preferred_sources=["gst.gov.in"],
     )
     save_research_tasks(db_session, [task_inc], investigation_id)
 
@@ -432,7 +435,7 @@ def test_research_reuse_incomplete_behavior(db_session, investigation_id):
     agent_mock.execute.return_value = mock_new_res
 
     with mock.patch("app.db.session.SessionLocal", MockSessionLocal), \
-         mock.patch("app.agents.browser.BrowserResearchAgent", return_value=agent_mock):
+         mock.patch("app.agents.browser.BrowserResearchAgent.execute", agent_mock.execute):
         out = browser_node(state)
 
     agent_mock.execute.assert_called_once_with(task_inc)
