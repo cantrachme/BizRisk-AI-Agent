@@ -92,6 +92,12 @@ def intake_node(state: InvestigationState) -> dict:
         return {
             "normalized_input": normalized_input,
             "status": "NORMALIZED",
+            "research_depth": 0,
+            "browser_actions": 0,
+            "browser_tasks_count": 0,
+            "llm_calls": 0,
+            "token_usage": 0,
+            "stop_reason": None,
         }
     except Exception as e:
         log_node_event(
@@ -136,19 +142,53 @@ def discovery_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "discovery", "STARTED")
 
     try:
+        from app.core.tracking import (
+            init_tracking_from_state,
+            update_state_from_tracking,
+            check_limits,
+        )
+        init_tracking_from_state(state)
+
+        # Check limits BEFORE starting discovery
+        reason = check_limits(state)
+        if reason:
+            update_investigation_in_db(state.get("investigation_id"), "discovery", status="LIMIT_REACHED")
+            log_node_event(investigation_id, "NODE_COMPLETED", "discovery", "LIMIT_REACHED", {"reason": reason})
+            ret_val = update_state_from_tracking(state)
+            ret_val.update({
+                "status": "LIMIT_REACHED",
+                "stop_reason": reason,
+            })
+            return ret_val
+
         discovery = DiscoveryAgent().process(
             state.get("normalized_input") or {}
         )
 
         candidates = discovery.get("candidate_entities", [])
 
+        # Update tracking vars after potential LLM calls
+        updated_state = update_state_from_tracking(state)
+
+        # Check limits AFTER executing discovery
+        reason = check_limits(updated_state)
+        if reason:
+            update_investigation_in_db(state.get("investigation_id"), "discovery", status="LIMIT_REACHED")
+            log_node_event(investigation_id, "NODE_COMPLETED", "discovery", "LIMIT_REACHED", {"reason": reason})
+            updated_state.update({
+                "status": "LIMIT_REACHED",
+                "stop_reason": reason,
+            })
+            return updated_state
+
         if not candidates:
             update_investigation_in_db(state.get("investigation_id"), "discovery", status="DISCOVERY_COMPLETED")
             log_node_event(investigation_id, "NODE_COMPLETED", "discovery", "COMPLETED", {"candidates_count": 0})
-            return {
+            updated_state.update({
                 "results": [],
                 "status": "DISCOVERY_COMPLETED",
-            }
+            })
+            return updated_state
 
         result = ResearchResult(
             result_id="DISCOVERY-001",
@@ -175,11 +215,24 @@ def discovery_node(state: InvestigationState) -> dict:
 
         update_investigation_in_db(investigation_id_str, "discovery", status="DISCOVERY_COMPLETED")
         log_node_event(investigation_id, "NODE_COMPLETED", "discovery", "COMPLETED", {"candidates_count": len(candidates)})
-        return {
+        updated_state.update({
             "results": [result],
             "status": "DISCOVERY_COMPLETED",
-        }
+        })
+        return updated_state
     except Exception as e:
+        err_msg = str(e)
+        from app.core.tracking import update_state_from_tracking
+        updated_state = update_state_from_tracking(state)
+        if "limit reached" in err_msg.lower() or "budget exhausted" in err_msg.lower():
+            update_investigation_in_db(investigation_id_str, "discovery", status="LIMIT_REACHED")
+            log_node_event(investigation_id, "NODE_COMPLETED", "discovery", "LIMIT_REACHED", {"reason": err_msg})
+            updated_state.update({
+                "status": "LIMIT_REACHED",
+                "stop_reason": err_msg,
+            })
+            return updated_state
+
         log_node_event(
             investigation_id,
             "NODE_FAILED",
@@ -222,16 +275,36 @@ def planner_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "planner", "STARTED")
 
     try:
+        from app.core.tracking import (
+            init_tracking_from_state,
+            update_state_from_tracking,
+            check_limits,
+        )
+        init_tracking_from_state(state)
+
+        # Check existing limits BEFORE executing planner node
+        # A new planner loop increments research depth
+        temp_state = update_state_from_tracking(state)
+        research_depth = temp_state.get("research_depth", 0) + 1
+        temp_state["research_depth"] = research_depth
+
+        reason = check_limits(temp_state)
+        if reason:
+            status = "MAX_LOOPS_REACHED" if reason == "Max research depth reached" else "LIMIT_REACHED"
+            update_investigation_in_db(state.get("investigation_id"), "planner", status=status, retry_count=state.get("qa_loop_count", 0))
+            log_node_event(investigation_id, "NODE_COMPLETED", "planner", "LIMIT_REACHED", {"status": status, "reason": reason})
+            ret_val = update_state_from_tracking(state)
+            ret_val.update({
+                "pending_tasks": [],
+                "status": status,
+                "stop_reason": reason,
+                "research_depth": research_depth,
+            })
+            return ret_val
+
         current_loops = state.get("planner_loop_count", 0)
 
-        if current_loops >= MAX_PLANNER_LOOPS:
-            update_investigation_in_db(state.get("investigation_id"), "planner", status="MAX_LOOPS_REACHED", retry_count=state.get("qa_loop_count", 0))
-            log_node_event(investigation_id, "NODE_COMPLETED", "planner", "COMPLETED", {"status": "MAX_LOOPS_REACHED"})
-            return {
-                "pending_tasks": [],
-                "status": "MAX_LOOPS_REACHED",
-            }
-
+        # Generate new tasks
         new_tasks = PlannerAgent().plan(state)
         current_loops += 1
 
@@ -244,21 +317,44 @@ def planner_node(state: InvestigationState) -> dict:
         existing_pending = state.get("pending_tasks") or []
         updated_pending = existing_pending + new_tasks
 
-        if current_loops >= MAX_PLANNER_LOOPS:
-            status = "MAX_LOOPS_REACHED"
-        elif new_tasks:
-            status = "PENDING_RESEARCH"
+        # Update state fields
+        updated_state = update_state_from_tracking(state)
+        updated_state["research_depth"] = research_depth
+        updated_state["planner_loop_count"] = current_loops
+
+        # Check limits AFTER planning/LLM calls
+        reason = check_limits(updated_state)
+        if reason:
+            status = "MAX_LOOPS_REACHED" if reason == "Max research depth reached" else "LIMIT_REACHED"
+            updated_state["stop_reason"] = reason
+            updated_state["pending_tasks"] = []
         else:
-            status = "COMPLETED"
+            if new_tasks:
+                status = "PENDING_RESEARCH"
+            else:
+                status = "COMPLETED"
 
         update_investigation_in_db(state.get("investigation_id"), "planner", status=status, retry_count=state.get("qa_loop_count", 0))
-        log_node_event(investigation_id, "NODE_COMPLETED", "planner", "COMPLETED", {"status": status, "new_tasks_count": len(new_tasks)})
-        return {
-            "pending_tasks": updated_pending,
-            "planner_loop_count": current_loops,
-            "status": status,
-        }
+        log_node_event(investigation_id, "NODE_COMPLETED", "planner", "COMPLETED", {"status": status, "new_tasks_count": len(new_tasks) if status not in {"LIMIT_REACHED", "MAX_LOOPS_REACHED"} else 0})
+
+        updated_state["status"] = status
+        updated_state["pending_tasks"] = updated_pending if status not in {"LIMIT_REACHED", "MAX_LOOPS_REACHED"} else []
+        return updated_state
     except Exception as e:
+        err_msg = str(e)
+        from app.core.tracking import update_state_from_tracking
+        updated_state = update_state_from_tracking(state)
+        if "limit reached" in err_msg.lower() or "budget exhausted" in err_msg.lower():
+            status = "MAX_LOOPS_REACHED" if "depth" in err_msg.lower() else "LIMIT_REACHED"
+            update_investigation_in_db(state.get("investigation_id"), "planner", status=status, retry_count=state.get("qa_loop_count", 0))
+            log_node_event(investigation_id, "NODE_COMPLETED", "planner", "LIMIT_REACHED", {"reason": err_msg})
+            updated_state.update({
+                "status": status,
+                "stop_reason": err_msg,
+                "pending_tasks": [],
+            })
+            return updated_state
+
         log_node_event(
             investigation_id,
             "NODE_FAILED",
@@ -301,6 +397,27 @@ def browser_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "browser_research", "STARTED")
 
     try:
+        from app.core.tracking import (
+            init_tracking_from_state,
+            update_state_from_tracking,
+            check_limits,
+            browser_actions_var,
+            browser_tasks_count_var,
+        )
+        init_tracking_from_state(state)
+
+        # Check existing limits BEFORE executing browser research node
+        reason = check_limits(state)
+        if reason:
+            update_investigation_in_db(state.get("investigation_id"), "browser", status="LIMIT_REACHED")
+            log_node_event(investigation_id, "NODE_COMPLETED", "browser_research", "LIMIT_REACHED", {"reason": reason})
+            ret_val = update_state_from_tracking(state)
+            ret_val.update({
+                "status": "LIMIT_REACHED",
+                "stop_reason": reason,
+            })
+            return ret_val
+
         from app.agents.browser import BrowserResearchAgent
 
         agent = BrowserResearchAgent()
@@ -315,20 +432,26 @@ def browser_node(state: InvestigationState) -> dict:
         results = list(existing_results)
         new_results = []
 
+        remaining_pending = []
+        limit_reached = False
+
         for task in pending_tasks:
+            if limit_reached:
+                remaining_pending.append(task)
+                continue
+
             reused_results = []
             if investigation_id:
                 from app.db.session import SessionLocal
                 from app.services.evidence import get_cached_source_result
                 from app.graph.state import ResearchResult
-                from app.agents.browser import BrowserResearchAgent
+                from app.agents.browser import SOURCES
                 import json
 
                 # Resolve task source using browser agent helper
                 source_key = BrowserResearchAgent._select_source(task)
                 source = None
                 if source_key:
-                    from app.agents.browser import SOURCES
                     if source_key in SOURCES:
                         source = SOURCES[source_key][0]
                     else:
@@ -387,6 +510,20 @@ def browser_node(state: InvestigationState) -> dict:
                     with SessionLocal() as db:
                         update_research_task_status(db, investigation_id, task.task_id, "COMPLETED")
             else:
+                # Check limits BEFORE executing next browser task/actions
+                temp_state = update_state_from_tracking(state)
+                reason = check_limits(temp_state, extra_tasks=1, extra_actions=1)
+                if reason:
+                    limit_reached = True
+                    state["stop_reason"] = reason
+                    state["status"] = "LIMIT_REACHED"
+                    remaining_pending.append(task)
+                    continue
+
+                # Increment tracking counters
+                browser_tasks_count_var.set(browser_tasks_count_var.get() + 1)
+                browser_actions_var.set(browser_actions_var.get() + 1)
+
                 # Otherwise execute browser task normally
                 if investigation_id:
                     from app.db.session import SessionLocal
@@ -433,16 +570,39 @@ def browser_node(state: InvestigationState) -> dict:
             except ValueError:
                 pass
 
-        update_investigation_in_db(investigation_id_str, "browser", status="RESEARCH_COMPLETED")
-        log_node_event(investigation_id, "NODE_COMPLETED", "browser_research", "COMPLETED", {"new_results_count": len(new_results)})
-        return {
-            "pending_tasks": [],
+        # Update state dictionary from the tracking context variables
+        updated_state = update_state_from_tracking(state)
+
+        # Decide browser node return status
+        if updated_state.get("stop_reason") or updated_state.get("status") == "LIMIT_REACHED":
+            status = "LIMIT_REACHED"
+        else:
+            status = "RESEARCH_COMPLETED"
+
+        update_investigation_in_db(investigation_id_str, "browser", status=status)
+        log_node_event(investigation_id, "NODE_COMPLETED", "browser_research", "COMPLETED", {"new_results_count": len(new_results), "status": status})
+
+        updated_state.update({
+            "pending_tasks": remaining_pending,
             "completed_tasks": completed_tasks,
             "failed_tasks": failed_tasks,
             "results": results,
-            "status": "RESEARCH_COMPLETED",
-        }
+            "status": status,
+        })
+        return updated_state
     except Exception as e:
+        err_msg = str(e)
+        from app.core.tracking import update_state_from_tracking
+        updated_state = update_state_from_tracking(state)
+        if "limit reached" in err_msg.lower() or "budget exhausted" in err_msg.lower():
+            update_investigation_in_db(investigation_id_str, "browser", status="LIMIT_REACHED")
+            log_node_event(investigation_id, "NODE_COMPLETED", "browser_research", "LIMIT_REACHED", {"reason": err_msg})
+            updated_state.update({
+                "status": "LIMIT_REACHED",
+                "stop_reason": err_msg,
+            })
+            return updated_state
+
         log_node_event(
             investigation_id,
             "NODE_FAILED",
@@ -486,6 +646,25 @@ def entity_resolution_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "entity_resolution", "STARTED")
 
     try:
+        from app.core.tracking import (
+            init_tracking_from_state,
+            update_state_from_tracking,
+            check_limits,
+        )
+        init_tracking_from_state(state)
+
+        # Check existing limits BEFORE executing entity resolution node
+        reason = check_limits(state)
+        if reason:
+            update_investigation_in_db(state.get("investigation_id"), "entity_resolution", status="LIMIT_REACHED")
+            log_node_event(investigation_id, "NODE_COMPLETED", "entity_resolution", "LIMIT_REACHED", {"reason": reason})
+            ret_val = update_state_from_tracking(state)
+            ret_val.update({
+                "status": "LIMIT_REACHED",
+                "stop_reason": reason,
+            })
+            return ret_val
+
         normalized_input = state.get("normalized_input") or {}
         results = state.get("results") or []
 
@@ -528,21 +707,40 @@ def entity_resolution_node(state: InvestigationState) -> dict:
 
         log_node_event(investigation_id, "NODE_COMPLETED", "entity_resolution", "COMPLETED", {"status": status, "confidence": resolution["confidence"]})
 
-        if resolution["matched"]:
-            return {
+        updated_state = update_state_from_tracking(state)
+
+        # Check limits AFTER executing entity resolution
+        reason = check_limits(updated_state)
+        if reason:
+            updated_state.update({
                 "resolved_entity": resolution["entity"],
                 "entity_confidence": resolution["confidence"],
                 "entity_resolution_status": resolution["match_type"],
-                "status": "ENTITY_RESOLVED",
-            }
+                "status": "LIMIT_REACHED",
+                "stop_reason": reason,
+            })
+            return updated_state
 
-        return {
+        updated_state.update({
             "resolved_entity": resolution["entity"],
             "entity_confidence": resolution["confidence"],
             "entity_resolution_status": resolution["match_type"],
-            "status": "ENTITY_UNRESOLVED",
-        }
+            "status": status,
+        })
+        return updated_state
     except Exception as e:
+        err_msg = str(e)
+        from app.core.tracking import update_state_from_tracking
+        updated_state = update_state_from_tracking(state)
+        if "limit reached" in err_msg.lower() or "budget exhausted" in err_msg.lower():
+            update_investigation_in_db(state.get("investigation_id"), "entity_resolution", status="LIMIT_REACHED")
+            log_node_event(investigation_id, "NODE_COMPLETED", "entity_resolution", "LIMIT_REACHED", {"reason": err_msg})
+            updated_state.update({
+                "status": "LIMIT_REACHED",
+                "stop_reason": err_msg,
+            })
+            return updated_state
+
         log_node_event(
             investigation_id,
             "NODE_FAILED",
@@ -585,6 +783,15 @@ def risk_analysis_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "risk_analysis", "STARTED")
 
     try:
+        from app.core.tracking import (
+            init_tracking_from_state,
+            update_state_from_tracking,
+            check_limits,
+        )
+        init_tracking_from_state(state)
+
+        # Note: we still run risk analysis even if limit is reached to allow graceful final scoring
+
         if investigation_id:
             from app.services.risk_analysis import analyze_investigation
             from app.db.session import SessionLocal
@@ -605,12 +812,26 @@ def risk_analysis_node(state: InvestigationState) -> dict:
 
         log_node_event(investigation_id, "NODE_COMPLETED", "risk_analysis", "COMPLETED", {"score": analysis["overall_risk"]["score"], "level": analysis["overall_risk"]["level"]})
 
-        return {
+        updated_state = update_state_from_tracking(state)
+        updated_state.update({
             "overall_risk": analysis["overall_risk"],
             "category_scores": analysis["category_scores"],
             "risk_signals": analysis["risk_signals"],
-        }
+        })
+        return updated_state
     except Exception as e:
+        err_msg = str(e)
+        from app.core.tracking import update_state_from_tracking
+        updated_state = update_state_from_tracking(state)
+        if "limit reached" in err_msg.lower() or "budget exhausted" in err_msg.lower():
+            update_investigation_in_db(investigation_id_str, "risk_analysis", status="LIMIT_REACHED")
+            log_node_event(investigation_id, "NODE_COMPLETED", "risk_analysis", "LIMIT_REACHED", {"reason": err_msg})
+            updated_state.update({
+                "status": "LIMIT_REACHED",
+                "stop_reason": err_msg,
+            })
+            return updated_state
+
         log_node_event(
             investigation_id,
             "NODE_FAILED",
@@ -653,6 +874,15 @@ def report_generation_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "report_generation", "STARTED")
 
     try:
+        from app.core.tracking import (
+            init_tracking_from_state,
+            update_state_from_tracking,
+            check_limits,
+        )
+        init_tracking_from_state(state)
+
+        # Note: we still run report generation even if limit is reached to allow graceful final report generation
+
         if investigation_id:
             from app.services.report import generate_investigation_report
             from app.db.session import SessionLocal
@@ -710,10 +940,25 @@ def report_generation_node(state: InvestigationState) -> dict:
 
         update_investigation_in_db(investigation_id_str, "report_generation", status="REPORT_GENERATED")
         log_node_event(investigation_id, "NODE_COMPLETED", "report_generation", "COMPLETED")
-        return {
+
+        updated_state = update_state_from_tracking(state)
+        updated_state.update({
             "report": report,
-        }
+        })
+        return updated_state
     except Exception as e:
+        err_msg = str(e)
+        from app.core.tracking import update_state_from_tracking
+        updated_state = update_state_from_tracking(state)
+        if "limit reached" in err_msg.lower() or "budget exhausted" in err_msg.lower():
+            update_investigation_in_db(investigation_id_str, "report_generation", status="LIMIT_REACHED")
+            log_node_event(investigation_id, "NODE_COMPLETED", "report_generation", "LIMIT_REACHED", {"reason": err_msg})
+            updated_state.update({
+                "status": "LIMIT_REACHED",
+                "stop_reason": err_msg,
+            })
+            return updated_state
+
         log_node_event(
             investigation_id,
             "NODE_FAILED",
@@ -756,6 +1001,15 @@ def qa_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "qa", "STARTED")
 
     try:
+        from app.core.tracking import (
+            init_tracking_from_state,
+            update_state_from_tracking,
+            check_limits,
+        )
+        init_tracking_from_state(state)
+
+        # Note: we still run QA even if limit is reached to allow graceful final scoring
+
         qa_loop_count = state.get("qa_loop_count") or 0
 
         if investigation_id:
@@ -843,11 +1097,25 @@ def qa_node(state: InvestigationState) -> dict:
             else:
                 log_node_event(investigation_id, "INVESTIGATION_FAILED", "qa", "FAILED", {"reason": "Max QA retries reached"})
 
-        return {
+        updated_state = update_state_from_tracking(state)
+        updated_state.update({
             "qa_result": qa_result,
             "qa_loop_count": qa_loop_count,
-        }
+        })
+        return updated_state
     except Exception as e:
+        err_msg = str(e)
+        from app.core.tracking import update_state_from_tracking
+        updated_state = update_state_from_tracking(state)
+        if "limit reached" in err_msg.lower() or "budget exhausted" in err_msg.lower():
+            update_investigation_in_db(investigation_id_str, "qa", status="LIMIT_REACHED")
+            log_node_event(investigation_id, "NODE_COMPLETED", "qa", "LIMIT_REACHED", {"reason": err_msg})
+            updated_state.update({
+                "status": "LIMIT_REACHED",
+                "stop_reason": err_msg,
+            })
+            return updated_state
+
         log_node_event(
             investigation_id,
             "NODE_FAILED",

@@ -2,9 +2,14 @@ from app.graph.state import InvestigationState, MAX_PLANNER_LOOPS
 
 
 def should_continue(state: InvestigationState) -> str:
+    if state.get("stop_reason") or state.get("status") == "LIMIT_REACHED":
+        return "__end__"
+
+    from app.core.config import get_settings
+    settings = get_settings()
     loop_count = state.get("planner_loop_count", 0)
 
-    if loop_count >= MAX_PLANNER_LOOPS:
+    if loop_count >= settings.max_research_depth:
         return "__end__"
 
     pending_tasks = state.get("pending_tasks") or []
@@ -15,19 +20,23 @@ def should_continue(state: InvestigationState) -> str:
     return "__end__"
 
 
-
 def should_continue_after_resolution(
     state: InvestigationState,
 ) -> str:
+    if state.get("stop_reason") or state.get("status") == "LIMIT_REACHED":
+        return "__end__"
+
     if state.get("entity_resolution_status") in {
         "EXACT",
         "SIMILARITY",
     }:
         return "__end__"
 
+    from app.core.config import get_settings
+    settings = get_settings()
     loop_count = state.get("planner_loop_count", 0)
 
-    if loop_count >= MAX_PLANNER_LOOPS:
+    if loop_count >= settings.max_research_depth:
         return "__end__"
 
     return "planner"
