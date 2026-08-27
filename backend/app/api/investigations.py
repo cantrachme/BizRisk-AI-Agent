@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Investigation
 from app.schemas.investigation import InvestigationCreate
+from app.api.auth import get_current_user_id, get_owned_investigation
 
 router = APIRouter(prefix="/investigations", tags=["investigations"])
 
@@ -14,6 +15,7 @@ router = APIRouter(prefix="/investigations", tags=["investigations"])
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_investigation(
     payload: InvestigationCreate,
+    current_user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict:
     if not any(
@@ -31,7 +33,7 @@ def create_investigation(
 
     investigation = Investigation(
         input_data=payload.model_dump_json(),
-        user_id=payload.user_id,
+        user_id=current_user_id,
         raw_input=payload.model_dump_json(),
         status="created",
     )
@@ -46,14 +48,38 @@ def create_investigation(
     }
 
 
+@router.get("/")
+def list_investigations(
+    current_user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> list:
+    from app.models.investigation import Investigation
+    investigations = (
+        db.query(Investigation)
+        .filter(Investigation.user_id == current_user_id)
+        .all()
+    )
+    return [
+        {
+            "id": str(inv.id),
+            "status": inv.status,
+            "current_node": inv.current_node,
+            "created_at": inv.created_at.isoformat() if inv.created_at else None,
+        }
+        for inv in investigations
+    ]
+
+
 @router.get("/incomplete")
 def list_incomplete_investigations(
+    current_user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> list:
     from app.models.investigation import Investigation
     incomplete = (
         db.query(Investigation)
         .filter(
+            Investigation.user_id == current_user_id,
             Investigation.completed_timestamp.is_(None),
             Investigation.status.notin_(["COMPLETED", "FAILED"])
         )
@@ -72,17 +98,8 @@ def list_incomplete_investigations(
 
 @router.get("/{investigation_id}")
 def get_investigation(
-    investigation_id: uuid.UUID,
-    db: Session = Depends(get_db),
+    investigation: Investigation = Depends(get_owned_investigation),
 ) -> dict:
-    investigation = db.get(Investigation, investigation_id)
-
-    if investigation is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Investigation not found.",
-        )
-
     return {
         "id": str(investigation.id),
         "status": investigation.status,
@@ -101,19 +118,11 @@ def get_investigation(
 
 @router.get("/{investigation_id}/evidence")
 def get_investigation_evidence(
-    investigation_id: uuid.UUID,
+    investigation: Investigation = Depends(get_owned_investigation),
     db: Session = Depends(get_db),
 ) -> list:
     from datetime import timezone
     from app.services.evidence import get_evidences_for_investigation
-
-    investigation = db.get(Investigation, investigation_id)
-
-    if investigation is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Investigation not found.",
-        )
 
     def format_dt(dt):
         if dt is None:
@@ -122,7 +131,7 @@ def get_investigation_evidence(
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.isoformat()
 
-    evidences = get_evidences_for_investigation(db, investigation_id)
+    evidences = get_evidences_for_investigation(db, investigation.id)
     return [
         {
             "id": str(ev.id),
@@ -143,21 +152,13 @@ def get_investigation_evidence(
 
 @router.get("/{investigation_id}/risk")
 def get_investigation_risk(
-    investigation_id: uuid.UUID,
+    investigation: Investigation = Depends(get_owned_investigation),
     db: Session = Depends(get_db),
 ) -> dict:
     from app.services.risk_analysis import analyze_investigation
 
-    investigation = db.get(Investigation, investigation_id)
-
-    if investigation is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Investigation not found.",
-        )
-
     try:
-        analysis = analyze_investigation(db, investigation_id)
+        analysis = analyze_investigation(db, investigation.id)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -183,20 +184,13 @@ def get_investigation_risk(
 
 @router.get("/{investigation_id}/report")
 def get_investigation_report(
-    investigation_id: uuid.UUID,
+    investigation: Investigation = Depends(get_owned_investigation),
     db: Session = Depends(get_db),
 ) -> dict:
-    investigation = db.get(Investigation, investigation_id)
-    if not investigation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Investigation not found.",
-        )
-
     from app.models.report import Report
     latest_report = (
         db.query(Report)
-        .filter(Report.investigation_id == investigation_id)
+        .filter(Report.investigation_id == investigation.id)
         .order_by(Report.version.desc())
         .first()
     )
@@ -205,7 +199,7 @@ def get_investigation_report(
 
     from app.services.report import generate_investigation_report
     try:
-        report = generate_investigation_report(db, investigation_id)
+        report = generate_investigation_report(db, investigation.id)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -217,20 +211,13 @@ def get_investigation_report(
 
 @router.get("/{investigation_id}/reports")
 def get_investigation_reports(
-    investigation_id: uuid.UUID,
+    investigation: Investigation = Depends(get_owned_investigation),
     db: Session = Depends(get_db),
 ) -> list:
-    investigation = db.get(Investigation, investigation_id)
-    if not investigation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Investigation not found.",
-        )
-
     from app.models.report import Report
     reports = (
         db.query(Report)
-        .filter(Report.investigation_id == investigation_id)
+        .filter(Report.investigation_id == investigation.id)
         .order_by(Report.version.asc())
         .all()
     )
@@ -250,13 +237,13 @@ def get_investigation_reports(
 
 @router.get("/{investigation_id}/qa")
 def get_investigation_qa(
-    investigation_id: uuid.UUID,
+    investigation: Investigation = Depends(get_owned_investigation),
     db: Session = Depends(get_db),
 ) -> dict:
     from app.services.qa import validate_report
 
     try:
-        qa_result = validate_report(db, investigation_id)
+        qa_result = validate_report(db, investigation.id)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -268,20 +255,13 @@ def get_investigation_qa(
 
 @router.get("/{investigation_id}/events")
 def get_investigation_events(
-    investigation_id: uuid.UUID,
+    investigation: Investigation = Depends(get_owned_investigation),
     db: Session = Depends(get_db),
 ) -> list:
-    investigation = db.get(Investigation, investigation_id)
-    if not investigation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Investigation not found.",
-        )
-
     from app.models.investigation_event import InvestigationEvent
     events = (
         db.query(InvestigationEvent)
-        .filter(InvestigationEvent.investigation_id == investigation_id)
+        .filter(InvestigationEvent.investigation_id == investigation.id)
         .order_by(InvestigationEvent.created_at.asc())
         .all()
     )
@@ -302,28 +282,21 @@ def get_investigation_events(
 
 @router.get("/{investigation_id}/human-intervention")
 def get_human_intervention_status(
-    investigation_id: uuid.UUID,
+    investigation: Investigation = Depends(get_owned_investigation),
     db: Session = Depends(get_db),
 ) -> dict:
-    investigation = db.get(Investigation, investigation_id)
-    if not investigation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Investigation not found.",
-        )
-
     from app.models.research_task import ResearchTask as ResearchTaskModel
     pending_intervention = (
         db.query(ResearchTaskModel)
         .filter(
-            ResearchTaskModel.investigation_id == investigation_id,
+            ResearchTaskModel.investigation_id == investigation.id,
             ResearchTaskModel.status == "HUMAN_INTERVENTION_REQUIRED",
         )
         .all()
     )
 
     return {
-        "investigation_id": str(investigation_id),
+        "investigation_id": str(investigation.id),
         "status": investigation.status,
         "pending_tasks": [
             {
@@ -343,16 +316,9 @@ def get_human_intervention_status(
 
 @router.post("/{investigation_id}/resume")
 def resume_investigation(
-    investigation_id: uuid.UUID,
+    investigation: Investigation = Depends(get_owned_investigation),
     db: Session = Depends(get_db),
 ) -> dict:
-    investigation = db.get(Investigation, investigation_id)
-    if not investigation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Investigation not found.",
-        )
-
     from app.models.research_task import ResearchTask as ResearchTaskModel
     from app.services.audit import record_event
 
@@ -360,7 +326,7 @@ def resume_investigation(
     blocked_tasks = (
         db.query(ResearchTaskModel)
         .filter(
-            ResearchTaskModel.investigation_id == investigation_id,
+            ResearchTaskModel.investigation_id == investigation.id,
             ResearchTaskModel.status == "HUMAN_INTERVENTION_REQUIRED",
         )
         .all()
@@ -380,7 +346,7 @@ def resume_investigation(
     # 3. Log INVESTIGATION_RESUMED event
     record_event(
         db,
-        investigation_id,
+        investigation.id,
         "INVESTIGATION_RESUMED",
         "browser",
         "STARTED",
@@ -391,7 +357,7 @@ def resume_investigation(
     from app.graph.workflow import app as graph_app
     from app.services.investigation import recover_investigation_state
 
-    state = recover_investigation_state(db, investigation_id)
+    state = recover_investigation_state(db, investigation.id)
     state["status"] = "PENDING_RESEARCH"
 
     # Execute graph
