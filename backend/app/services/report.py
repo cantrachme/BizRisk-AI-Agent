@@ -145,42 +145,31 @@ def generate_investigation_report(
 
     # 8. Persist the report
     from app.models.report import Report
-    reports = db.query(Report).filter(Report.investigation_id == investigation_id).order_by(Report.version.asc()).all()
-    if not reports:
-        db_version = 1
-    else:
-        latest_report = reports[-1]
-        if latest_report.qa_status == "PENDING":
-            db_version = latest_report.version
-        else:
-            db_version = latest_report.version + 1
+    from app.db.session import db_lock
+    from app.risk.engine import RISK_RULE_VERSION
 
-    report_dict["meta"]["report_version"] = str(db_version)
+    report_dict["meta"]["rule_version"] = RISK_RULE_VERSION
 
-    if not reports:
+    with db_lock:
+        latest_report = (
+            db.query(Report)
+            .filter(Report.investigation_id == investigation_id)
+            .order_by(Report.version.desc())
+            .first()
+        )
+        db_version = (latest_report.version + 1) if latest_report else 1
+
+        report_dict["meta"]["report_version"] = str(db_version)
+
         new_report = Report(
             investigation_id=investigation_id,
             version=db_version,
             report_json=json.dumps(report_dict),
             qa_status="PENDING",
+            created_at=datetime.now(timezone.utc),
         )
         db.add(new_report)
         db.commit()
-    else:
-        latest_report = reports[-1]
-        if latest_report.qa_status == "PENDING":
-            # Overwrite in-place (unintentional regeneration/retrieval)
-            latest_report.report_json = json.dumps(report_dict)
-            db.commit()
-        else:
-            # Create a new version
-            new_report = Report(
-                investigation_id=investigation_id,
-                version=db_version,
-                report_json=json.dumps(report_dict),
-                qa_status="PENDING",
-            )
-            db.add(new_report)
-            db.commit()
+        db.refresh(new_report)
 
     return report_dict

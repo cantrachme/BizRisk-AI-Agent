@@ -189,9 +189,11 @@ def test_report_generation_is_deterministic(db_session, investigation_id):
     report1 = generate_investigation_report(db_session, investigation_id)
     report2 = generate_investigation_report(db_session, investigation_id)
 
-    # Discard dynamic generated_at timestamp for comparison
+    # Discard dynamic generated_at timestamp and version for comparison
     report1["meta"].pop("generated_at", None)
     report2["meta"].pop("generated_at", None)
+    report1["meta"].pop("report_version", None)
+    report2["meta"].pop("report_version", None)
 
     assert report1 == report2
 

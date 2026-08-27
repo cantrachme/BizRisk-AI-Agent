@@ -9,6 +9,7 @@ from app.models.risk_signal import RiskSignal
 from app.risk.rules import normalize_evidence, run_all_rules
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
+RISK_RULE_VERSION = "1.0.0"
 
 
 class InsufficientEvidenceError(ValueError):
