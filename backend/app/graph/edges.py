@@ -2,7 +2,7 @@ from app.graph.state import InvestigationState, MAX_PLANNER_LOOPS
 
 
 def should_continue(state: InvestigationState) -> str:
-    if state.get("stop_reason") or state.get("status") == "LIMIT_REACHED":
+    if state.get("stop_reason") or state.get("status") in {"LIMIT_REACHED", "MAX_LOOPS_REACHED", "WAITING_FOR_USER"}:
         return "__end__"
 
     from app.core.config import get_settings
@@ -23,7 +23,7 @@ def should_continue(state: InvestigationState) -> str:
 def should_continue_after_resolution(
     state: InvestigationState,
 ) -> str:
-    if state.get("stop_reason") or state.get("status") == "LIMIT_REACHED":
+    if state.get("stop_reason") or state.get("status") in {"LIMIT_REACHED", "MAX_LOOPS_REACHED", "WAITING_FOR_USER"}:
         return "__end__"
 
     if state.get("entity_resolution_status") in {

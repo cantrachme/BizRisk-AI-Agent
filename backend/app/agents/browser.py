@@ -7,6 +7,7 @@ from urllib.request import Request, urlopen
 import re
 
 from app.graph.state import ResearchResult, ResearchTask
+from app.core.exceptions import HumanInterventionRequiredException
 
 
 SOURCES = {
@@ -24,6 +25,72 @@ SUPPORTED_TASK_TYPES = {
     "WEBSITE_VERIFICATION",
     "GENERAL_WEB_RESEARCH",
 }
+
+
+def detect_human_intervention(html: str) -> str | None:
+    if not html:
+        return None
+
+    html_lower = html.lower()
+
+    # 1. CAPTCHA Check
+    captcha_patterns = [
+        r"recaptcha",
+        r"hcaptcha",
+        r"g-recaptcha",
+        r"bot verification",
+        r"verify you are human",
+        r"robot check",
+        r"prove you're not a robot",
+        r"please solve the captcha",
+        r"solve the captcha below",
+        r"security check to proceed",
+        r"complete the captcha",
+        r"distribute captcha",
+    ]
+    # Check title explicitly
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
+    if title_match:
+        title_text = title_match.group(1).lower()
+        if "captcha" in title_text or "robot verification" in title_text or "verify you are human" in title_text:
+            return "CAPTCHA"
+
+    for pattern in captcha_patterns:
+        if pattern in {"recaptcha", "hcaptcha", "g-recaptcha"}:
+            if pattern in html_lower:
+                return "CAPTCHA"
+        else:
+            if re.search(r"\b" + re.escape(pattern) + r"\b", html_lower):
+                return "CAPTCHA"
+
+    # 2. OTP Check
+    otp_patterns = [
+        r"enter otp",
+        r"enter one-time password",
+        r"one time password",
+        r"verification code sent",
+        r"enter verification code",
+        r"two-factor authentication",
+        r"2fa code",
+    ]
+    for pattern in otp_patterns:
+        if re.search(r"\b" + re.escape(pattern) + r"\b", html_lower):
+            return "OTP"
+
+    # 3. Login Check
+    login_patterns = [
+        r"login required",
+        r"please log in",
+        r"sign in to your account",
+        r"authentication required",
+        r"member login",
+        r"sign in to proceed",
+    ]
+    for pattern in login_patterns:
+        if re.search(r"\b" + re.escape(pattern) + r"\b", html_lower):
+            return "LOGIN_REQUIRED"
+
+    return None
 
 
 class BrowserResearchAgent:
@@ -64,7 +131,15 @@ class BrowserResearchAgent:
 
         try:
             html = self.fetcher(research_url)
+            intervention_type = detect_human_intervention(html)
+            if intervention_type:
+                raise HumanInterventionRequiredException(
+                    message=f"Human intervention required: {intervention_type}",
+                    intervention_type=intervention_type
+                )
             page_data = self._extract_page_data(html)
+        except HumanInterventionRequiredException:
+            raise
         except Exception:
             page_data = {
                 "title": None,
