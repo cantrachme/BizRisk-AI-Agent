@@ -42,6 +42,12 @@ class BrowserResearchAgent:
         if source is None:
             return []
 
+        # Check domain restrictions (TRD §80)
+        allowed_domains = getattr(task, "allowed_domains", None)
+        if allowed_domains is not None:
+            if source not in allowed_domains:
+                return []
+
         if task.task_type not in SUPPORTED_TASK_TYPES:
             return []
 
@@ -173,6 +179,25 @@ class BrowserResearchAgent:
             )
 
     @staticmethod
+    def _sanitize_prompt_injection(text: str | None) -> str | None:
+        if not text:
+            return text
+        # Neutralize common instruction patterns case-insensitively (TRD §79)
+        patterns = [
+            (r"(?i)\bignore\s+(?:previous|all|the|above|below)?\s*instructions\b", "[neutralized prompt injection instruction]"),
+            (r"(?i)\bignore\s+rules\b", "[neutralized prompt injection rules]"),
+            (r"(?i)\bignore\s+the\s+rules\b", "[neutralized prompt injection rules]"),
+            (r"(?i)\bignore\s+previous\s+directives\b", "[neutralized prompt injection directive]"),
+            (r"(?i)\byou\s+are\s+now\b", "[neutralized role-play instruction]"),
+            (r"(?i)\bsystem\s+(?:prompt|instruction|directives)\b", "[neutralized system label]"),
+            (r"(?i)\bdeveloper\s+instructions\b", "[neutralized system label]"),
+        ]
+        sanitized = text
+        for pattern, replacement in patterns:
+            sanitized = re.sub(pattern, replacement, sanitized)
+        return sanitized
+
+    @staticmethod
     def _extract_page_data(
         html: str,
     ) -> dict:
@@ -189,6 +214,7 @@ class BrowserResearchAgent:
             if title_match
             else None
         )
+        title = BrowserResearchAgent._sanitize_prompt_injection(title)
 
         body = re.sub(
             r"<script[^>]*>.*?</script>",
@@ -207,6 +233,7 @@ class BrowserResearchAgent:
         text = BrowserResearchAgent._clean_text(
             re.sub(r"<[^>]+>", " ", body)
         )
+        text = BrowserResearchAgent._sanitize_prompt_injection(text)
 
         return {
             "title": title,
@@ -228,11 +255,14 @@ class BrowserResearchAgent:
         title = page_data.get("title")
         text = page_data.get("text")
 
+        # Delimit text content as untrusted (TRD §79)
+        delimited_text = f"<UNTRUSTED_WEBSITE_CONTENT>\n{text}\n</UNTRUSTED_WEBSITE_CONTENT>" if text else ""
+
         if field_name == "candidate_entities":
             return [
                 {
                     "name": title or task.target,
-                    "source_text": text,
+                    "source_text": delimited_text,
                     "confidence": 0.0,
                 }
             ]
@@ -262,9 +292,9 @@ class BrowserResearchAgent:
             "content",
             "source_text",
         }:
-            return text
+            return delimited_text
 
         return {
             "title": title,
-            "text": text,
+            "text": delimited_text,
         }

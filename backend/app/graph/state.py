@@ -10,6 +10,7 @@ class ResearchTask(BaseModel):
     priority: int
     preferred_sources: List[str] = Field(default_factory=list)
     fallback_sources: List[str] = Field(default_factory=list)
+    allowed_domains: Optional[List[str]] = Field(default=None)
     status: str = "PENDING"  # PENDING, COMPLETED, FAILED
 
 class ResearchResult(BaseModel):
