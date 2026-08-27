@@ -45,6 +45,11 @@ class Investigation(Base):
         cascade="all, delete-orphan",
     )
 
+    research_tasks: Mapped[List["ResearchTask"]] = relationship(
+        back_populates="investigation",
+        cascade="all, delete-orphan",
+    )
+
     reports: Mapped[List["Report"]] = relationship(
         back_populates="investigation",
         cascade="all, delete-orphan",

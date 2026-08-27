@@ -235,6 +235,12 @@ def planner_node(state: InvestigationState) -> dict:
         new_tasks = PlannerAgent().plan(state)
         current_loops += 1
 
+        if investigation_id and new_tasks:
+            from app.db.session import SessionLocal
+            from app.services.research_task import save_research_tasks
+            with SessionLocal() as db:
+                save_research_tasks(db, new_tasks, investigation_id)
+
         existing_pending = state.get("pending_tasks") or []
         updated_pending = existing_pending + new_tasks
 
@@ -310,6 +316,12 @@ def browser_node(state: InvestigationState) -> dict:
         new_results = []
 
         for task in pending_tasks:
+            if investigation_id:
+                from app.db.session import SessionLocal
+                from app.services.research_task import update_research_task_status
+                with SessionLocal() as db:
+                    update_research_task_status(db, investigation_id, task.task_id, "STARTED")
+
             task_results = agent.execute(task)
 
             if task_results:
@@ -318,10 +330,22 @@ def browser_node(state: InvestigationState) -> dict:
                 )
                 results.extend(task_results)
                 new_results.extend(task_results)
+                if investigation_id:
+                    with SessionLocal() as db:
+                        update_research_task_status(db, investigation_id, task.task_id, "COMPLETED")
             else:
                 failed_tasks.append(
                     task.model_copy(update={"status": "FAILED"})
                 )
+                if investigation_id:
+                    with SessionLocal() as db:
+                        update_research_task_status(
+                            db,
+                            investigation_id,
+                            task.task_id,
+                            "FAILED",
+                            error="No results returned"
+                        )
 
         if investigation_id_str and new_results:
             try:

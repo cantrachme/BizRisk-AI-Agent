@@ -46,16 +46,29 @@ def save_research_results(
         else:
             val_str = val
 
+        from app.models.research_task import ResearchTask as ResearchTaskModel
+        task_db = (
+            db.query(ResearchTaskModel)
+            .filter(
+                ResearchTaskModel.investigation_id == investigation_id,
+                ResearchTaskModel.task_id == result.task_id,
+            )
+            .first()
+        )
+        task_id_val = task_db.id if task_db else None
+
         evidence = Evidence(
             investigation_id=investigation_id,
             research_result_id=result.result_id,
             task_id=result.task_id,
+            research_task_id=task_id_val,
             field_name=result.field_name,
             field_value=val_str,
             source_name=result.source_name,
             source_url=result.source_url,
             retrieved_timestamp=retrieved_dt,
             confidence=result.confidence,
+            verification_status="UNVERIFIED",
         )
         db.add(evidence)
         evidences.append(evidence)
