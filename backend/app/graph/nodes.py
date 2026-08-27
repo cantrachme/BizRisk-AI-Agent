@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 import uuid
+import threading
+import concurrent.futures
 
 from app.agents.discovery import DiscoveryAgent
 from app.agents.intake import IntakeAgent
@@ -11,6 +13,9 @@ from app.graph.state import (
     ResearchResult,
 )
 from app.core.exceptions import HumanInterventionRequiredException
+
+
+from app.db.session import db_lock
 
 
 def update_investigation_in_db(
@@ -38,8 +43,9 @@ def update_investigation_in_db(
     from app.services.investigation import serialize_state
     import json
 
-    with SessionLocal() as db:
-        inv = db.get(Investigation, investigation_id)
+    with db_lock:
+        with SessionLocal() as db:
+            inv = db.get(Investigation, investigation_id)
         if inv:
             inv.current_node = current_node
             inv.current_graph_node = current_node
@@ -419,6 +425,21 @@ def planner_node(state: InvestigationState) -> dict:
         raise
 
 
+class ThreadSafeContextVarProxy:
+    def __init__(self, shared_dict, key, lock):
+        self.shared_dict = shared_dict
+        self.key = key
+        self.lock = lock
+
+    def get(self, default=0):
+        with self.lock:
+            return self.shared_dict.get(self.key, default)
+
+    def set(self, value):
+        with self.lock:
+            self.shared_dict[self.key] = value
+
+
 def browser_node(state: InvestigationState) -> dict:
     investigation_id_str = state.get("investigation_id")
     investigation_id = None
@@ -472,16 +493,14 @@ def browser_node(state: InvestigationState) -> dict:
         hitl_reason = None
         blocked_sources = set()
 
+        cache_miss_tasks = []
+
         for task in pending_tasks:
             # Resolve task source using browser agent helper
             source_key = BrowserResearchAgent._select_source(task)
 
             # Skip execution if the source/domain is already blocked by human verification requirement
             if source_key and source_key in blocked_sources:
-                remaining_pending.append(task)
-                continue
-
-            if limit_reached:
                 remaining_pending.append(task)
                 continue
 
@@ -495,10 +514,22 @@ def browser_node(state: InvestigationState) -> dict:
 
                 source = None
                 if source_key:
-                    if source_key in SOURCES:
-                        source = SOURCES[source_key][0]
-                    else:
-                        source = source_key
+                    source_name, source_url, confidence = None, None, None
+                    try:
+                        from app.services.source_registry import get_source_by_name
+                        with SessionLocal() as db:
+                            db_source = get_source_by_name(db, source_key)
+                            if db_source:
+                                source_name = db_source.name
+                    except Exception:
+                        pass
+                    
+                    if not source_name:
+                        if source_key in SOURCES:
+                            source_name = SOURCES[source_key][0]
+                        else:
+                            source_name = source_key
+                    source = source_name
 
                 all_fields_fresh = True
                 task_reused_results = []
@@ -550,89 +581,198 @@ def browser_node(state: InvestigationState) -> dict:
                 if investigation_id:
                     from app.db.session import SessionLocal
                     from app.services.research_task import update_research_task_status
-                    with SessionLocal() as db:
-                        update_research_task_status(db, investigation_id, task.task_id, "COMPLETED")
+                    with db_lock:
+                        with SessionLocal() as db:
+                            update_research_task_status(db, investigation_id, task.task_id, "COMPLETED")
             else:
-                # Check limits BEFORE executing next browser task/actions
-                temp_state = update_state_from_tracking(state)
-                reason = check_limits(temp_state, extra_tasks=1, extra_actions=1)
-                if reason:
-                    limit_reached = True
-                    state["stop_reason"] = reason
-                    state["status"] = "LIMIT_REACHED"
-                    remaining_pending.append(task)
-                    continue
+                cache_miss_tasks.append(task)
 
-                # Increment tracking counters
-                browser_tasks_count_var.set(browser_tasks_count_var.get() + 1)
-                browser_actions_var.set(browser_actions_var.get() + 1)
+        if cache_miss_tasks:
+            import app.core.tracking as tracking
 
-                # Otherwise execute browser task normally
+            shared_dict = {
+                "llm_calls": tracking.llm_calls_var.get(),
+                "token_usage": tracking.token_usage_var.get(),
+                "browser_actions": tracking.browser_actions_var.get(),
+                "browser_tasks_count": tracking.browser_tasks_count_var.get(),
+            }
+            lock = threading.RLock()
+
+            proxy_llm_calls = ThreadSafeContextVarProxy(shared_dict, "llm_calls", lock)
+            proxy_token_usage = ThreadSafeContextVarProxy(shared_dict, "token_usage", lock)
+            proxy_browser_actions = ThreadSafeContextVarProxy(shared_dict, "browser_actions", lock)
+            proxy_browser_tasks_count = ThreadSafeContextVarProxy(shared_dict, "browser_tasks_count", lock)
+
+            orig_llm = tracking.llm_calls_var
+            orig_token = tracking.token_usage_var
+            orig_actions = tracking.browser_actions_var
+            orig_tasks = tracking.browser_tasks_count_var
+
+            def run_task_in_thread(task):
+                # 1. Check limits with lock
+                with lock:
+                    temp_state = update_state_from_tracking(state)
+                    temp_state["llm_calls"] = shared_dict["llm_calls"]
+                    temp_state["token_usage"] = shared_dict["token_usage"]
+                    temp_state["browser_actions"] = shared_dict["browser_actions"]
+                    temp_state["browser_tasks_count"] = shared_dict["browser_tasks_count"]
+
+                    reason = check_limits(temp_state, extra_tasks=1, extra_actions=1)
+                    if reason:
+                        return {
+                            "task_id": task.task_id,
+                            "status": "LIMIT_REACHED",
+                            "stop_reason": reason,
+                            "results": []
+                        }
+                    shared_dict["browser_tasks_count"] += 1
+                    shared_dict["browser_actions"] += 1
+
+                # 2. Update task status to STARTED in DB
                 if investigation_id:
                     from app.db.session import SessionLocal
                     from app.services.research_task import update_research_task_status
-                    with SessionLocal() as db:
-                        update_research_task_status(db, investigation_id, task.task_id, "STARTED")
+                    with db_lock:
+                        with SessionLocal() as db:
+                            update_research_task_status(db, investigation_id, task.task_id, "STARTED")
 
+                # 3. Execute BrowserResearchAgent
                 try:
                     task_results = agent.execute(task)
                     if task_results:
-                        completed_tasks.append(
-                            task.model_copy(update={"status": "COMPLETED"})
-                        )
-                        results.extend(task_results)
-                        new_results.extend(task_results)
                         if investigation_id:
                             from app.db.session import SessionLocal
                             from app.services.research_task import update_research_task_status
-                            with SessionLocal() as db:
-                                update_research_task_status(db, investigation_id, task.task_id, "COMPLETED")
+                            with db_lock:
+                                with SessionLocal() as db:
+                                    update_research_task_status(db, investigation_id, task.task_id, "COMPLETED")
+                        return {
+                            "task_id": task.task_id,
+                            "status": "COMPLETED",
+                            "results": task_results
+                        }
                     else:
-                        failed_tasks.append(
-                            task.model_copy(update={"status": "FAILED"})
-                        )
                         if investigation_id:
                             from app.db.session import SessionLocal
                             from app.services.research_task import update_research_task_status
+                            with db_lock:
+                                with SessionLocal() as db:
+                                    update_research_task_status(
+                                        db,
+                                        investigation_id,
+                                        task.task_id,
+                                        "FAILED",
+                                        error="No results returned"
+                                    )
+                        return {
+                            "task_id": task.task_id,
+                            "status": "FAILED",
+                            "results": []
+                        }
+                except HumanInterventionRequiredException as hitl_ex:
+                    if investigation_id:
+                        from app.db.session import SessionLocal
+                        from app.services.research_task import update_research_task_status
+                        from app.services.audit import record_event
+                        with db_lock:
+                            with SessionLocal() as db:
+                                update_research_task_status(
+                                    db,
+                                    investigation_id,
+                                    task.task_id,
+                                    "HUMAN_INTERVENTION_REQUIRED",
+                                    error=hitl_ex.message,
+                                    intervention_type=hitl_ex.intervention_type,
+                                    intervention_reason=hitl_ex.message
+                                )
+                                record_event(
+                                    db,
+                                    investigation_id,
+                                    "HUMAN_INTERVENTION_REQUIRED",
+                                    "browser",
+                                    "WAITING_FOR_USER",
+                                    {"task_id": task.task_id, "type": hitl_ex.intervention_type, "reason": hitl_ex.message}
+                                )
+                    return {
+                        "task_id": task.task_id,
+                        "status": "HUMAN_INTERVENTION_REQUIRED",
+                        "intervention_type": hitl_ex.intervention_type,
+                        "intervention_reason": hitl_ex.message,
+                        "results": []
+                    }
+                except Exception as e:
+                    err_msg = str(e)
+                    if investigation_id:
+                        from app.db.session import SessionLocal
+                        from app.services.research_task import update_research_task_status
+                        with db_lock:
                             with SessionLocal() as db:
                                 update_research_task_status(
                                     db,
                                     investigation_id,
                                     task.task_id,
                                     "FAILED",
-                                    error="No results returned"
+                                    error=err_msg
                                 )
-                except HumanInterventionRequiredException as hitl_ex:
-                    hitl_blocked = True
-                    hitl_reason = hitl_ex.message
-                    if source_key:
-                        blocked_sources.add(source_key)
+                    return {
+                        "task_id": task.task_id,
+                        "status": "FAILED",
+                        "error": err_msg,
+                        "results": []
+                    }
 
-                    if investigation_id:
-                        from app.db.session import SessionLocal
-                        from app.services.research_task import update_research_task_status
-                        from app.services.audit import record_event
-                        with SessionLocal() as db:
-                            update_research_task_status(
-                                db,
-                                investigation_id,
-                                task.task_id,
-                                "HUMAN_INTERVENTION_REQUIRED",
-                                error=hitl_ex.message,
-                                intervention_type=hitl_ex.intervention_type,
-                                intervention_reason=hitl_ex.message
-                            )
-                            record_event(
-                                db,
-                                investigation_id,
-                                "HUMAN_INTERVENTION_REQUIRED",
-                                "browser",
-                                "WAITING_FOR_USER",
-                                {"task_id": task.task_id, "type": hitl_ex.intervention_type, "reason": hitl_ex.message}
-                            )
+            try:
+                tracking.llm_calls_var = proxy_llm_calls
+                tracking.token_usage_var = proxy_token_usage
+                tracking.browser_actions_var = proxy_browser_actions
+                tracking.browser_tasks_count_var = proxy_browser_tasks_count
 
-                    blocked_task = task.model_copy(update={"status": "HUMAN_INTERVENTION_REQUIRED"})
-                    remaining_pending.append(blocked_task)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=len(cache_miss_tasks)) as executor:
+                    futures = {executor.submit(run_task_in_thread, t): t for t in cache_miss_tasks}
+                    for future in concurrent.futures.as_completed(futures):
+                        task = futures[future]
+                        try:
+                            res_dict = future.result()
+                        except Exception as e:
+                            res_dict = {
+                                "task_id": task.task_id,
+                                "status": "FAILED",
+                                "error": str(e),
+                                "results": []
+                            }
+
+                        task_status = res_dict["status"]
+                        task_results = res_dict.get("results") or []
+
+                        if task_status == "COMPLETED":
+                            completed_tasks.append(task.model_copy(update={"status": "COMPLETED"}))
+                            results.extend(task_results)
+                            new_results.extend(task_results)
+                        elif task_status == "FAILED":
+                            failed_tasks.append(task.model_copy(update={"status": "FAILED"}))
+                        elif task_status == "HUMAN_INTERVENTION_REQUIRED":
+                            hitl_blocked = True
+                            hitl_reason = res_dict["intervention_reason"]
+                            source_key = BrowserResearchAgent._select_source(task)
+                            if source_key:
+                                blocked_sources.add(source_key)
+                            blocked_task = task.model_copy(update={"status": "HUMAN_INTERVENTION_REQUIRED"})
+                            remaining_pending.append(blocked_task)
+                        elif task_status == "LIMIT_REACHED":
+                            limit_reached = True
+                            state["stop_reason"] = res_dict["stop_reason"]
+                            state["status"] = "LIMIT_REACHED"
+                            remaining_pending.append(task)
+            finally:
+                tracking.llm_calls_var = orig_llm
+                tracking.token_usage_var = orig_token
+                tracking.browser_actions_var = orig_actions
+                tracking.browser_tasks_count_var = orig_tasks
+
+                tracking.llm_calls_var.set(shared_dict["llm_calls"])
+                tracking.token_usage_var.set(shared_dict["token_usage"])
+                tracking.browser_actions_var.set(shared_dict["browser_actions"])
+                tracking.browser_tasks_count_var.set(shared_dict["browser_tasks_count"])
 
         if investigation_id_str and new_results:
             try:

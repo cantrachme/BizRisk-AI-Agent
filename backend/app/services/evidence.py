@@ -202,6 +202,15 @@ def get_cached_source_result(
     norm_target = str(target).strip().lower()
     norm_objective = str(objective).strip().lower()
     norm_source = str(source_name).strip().lower()
+    source_names = [norm_source]
+    if norm_source == "gst.gov.in":
+        source_names.append("gst portal")
+    elif norm_source == "gst portal":
+        source_names.append("gst.gov.in")
+    elif norm_source == "mca.gov.in":
+        source_names.append("mca portal")
+    elif norm_source == "mca portal":
+        source_names.append("mca.gov.in")
 
     # Query for matching evidence records linked to a ResearchTask with the same parameters
     evs = (
@@ -212,7 +221,7 @@ def get_cached_source_result(
             func.lower(func.trim(ResearchTaskModel.target)) == norm_target,
             func.lower(func.trim(ResearchTaskModel.objective)) == norm_objective,
             Evidence.field_name == field_name,
-            func.lower(func.trim(Evidence.source_name)) == norm_source,
+            func.lower(func.trim(Evidence.source_name)).in_(source_names),
         )
         .order_by(Evidence.retrieved_timestamp.desc())
         .all()

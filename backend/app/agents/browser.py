@@ -121,16 +121,17 @@ class BrowserResearchAgent:
         source_name, source_url, confidence = None, None, None
 
         try:
-            from app.db.session import SessionLocal
+            from app.db.session import SessionLocal, db_lock
             from app.services.source_registry import get_source_by_name
-            with SessionLocal() as db:
-                db_source = get_source_by_name(db, source)
-                if db_source:
-                    source_name = db_source.name
-                    source_url = db_source.domain
-                    import json
-                    config = json.loads(db_source.config_json or "{}")
-                    confidence = config.get("confidence", 0.95)
+            with db_lock:
+                with SessionLocal() as db:
+                    db_source = get_source_by_name(db, source)
+                    if db_source:
+                        source_name = db_source.name
+                        source_url = db_source.domain
+                        import json
+                        config = json.loads(db_source.config_json or "{}")
+                        confidence = config.get("confidence", 0.95)
         except Exception:
             pass
 
