@@ -181,3 +181,46 @@ def get_evidences_for_investigation(
         .filter(Evidence.investigation_id == investigation_id)
         .all()
     )
+
+
+def get_cached_source_result(
+    db: Session,
+    task_type: str,
+    target: str,
+    objective: str,
+    field_name: str,
+    source_name: str,
+) -> Optional[Evidence]:
+    """
+    Finds a fresh persisted Evidence record matching the task parameters, field name, and source name.
+    Different sources do not collide. Ordering ensures the newest evidence is checked first.
+    """
+    from app.models.research_task import ResearchTask as ResearchTaskModel
+
+    # Normalize task parameters
+    norm_task_type = str(task_type).strip().upper()
+    norm_target = str(target).strip().lower()
+    norm_objective = str(objective).strip().lower()
+    norm_source = str(source_name).strip().lower()
+
+    # Query for matching evidence records linked to a ResearchTask with the same parameters
+    evs = (
+        db.query(Evidence)
+        .join(ResearchTaskModel, Evidence.research_task_id == ResearchTaskModel.id)
+        .filter(
+            func.upper(func.trim(ResearchTaskModel.task_type)) == norm_task_type,
+            func.lower(func.trim(ResearchTaskModel.target)) == norm_target,
+            func.lower(func.trim(ResearchTaskModel.objective)) == norm_objective,
+            Evidence.field_name == field_name,
+            func.lower(func.trim(Evidence.source_name)) == norm_source,
+        )
+        .order_by(Evidence.retrieved_timestamp.desc())
+        .all()
+    )
+
+    for ev in evs:
+        # Verify freshness of the cached evidence
+        if is_evidence_fresh(ev.retrieved_timestamp, field_name):
+            return ev
+
+    return None
