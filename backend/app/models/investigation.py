@@ -18,16 +18,21 @@ class Investigation(Base):
         nullable=False,
     )
     input_data: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    raw_input: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    normalized_input: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    current_graph_node: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    completed_timestamp: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    persistent_graph_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     current_node: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     risk_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     risk_level: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     resolved_entity_id: Mapped[Optional[uuid.UUID]] = mapped_column(nullable=True)
     entity_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
