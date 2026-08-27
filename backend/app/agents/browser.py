@@ -118,7 +118,29 @@ class BrowserResearchAgent:
         if task.task_type not in SUPPORTED_TASK_TYPES:
             return []
 
-        source_name, source_url, confidence = SOURCES[source]
+        source_name, source_url, confidence = None, None, None
+
+        try:
+            from app.db.session import SessionLocal
+            from app.services.source_registry import get_source_by_name
+            with SessionLocal() as db:
+                db_source = get_source_by_name(db, source)
+                if db_source:
+                    source_name = db_source.name
+                    source_url = db_source.domain
+                    import json
+                    config = json.loads(db_source.config_json or "{}")
+                    confidence = config.get("confidence", 0.95)
+        except Exception:
+            pass
+
+        if source_name is None:
+            if source in SOURCES:
+                source_name, source_url, confidence = SOURCES[source]
+            else:
+                source_name = source
+                source_url = None
+                confidence = 0.50
 
         research_url = self._resolve_url(
             task=task,
