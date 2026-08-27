@@ -9,7 +9,14 @@ RESOLUTION_THRESHOLD = 0.75
 def resolve_entity(
     target: dict,
     candidates: list[dict],
+    llm=None,
+    prompt_version: str = "v1",
 ) -> dict:
+    from app.core.llm import get_llm_provider
+    from app.core.prompts import load_prompt
+    resolved_llm = llm or get_llm_provider(temperature=0.0)
+    prompt = load_prompt("entity_resolution", prompt_version)
+
     if not candidates:
         return {
             "entity": None,

@@ -2,6 +2,13 @@ from typing import Any
 
 
 class DiscoveryAgent:
+    def __init__(self, llm=None, prompt_version: str = "v1"):
+        from app.core.llm import get_llm_provider
+        from app.core.prompts import load_prompt
+        self.llm = llm or get_llm_provider(temperature=0.0)
+        self.prompt_version = prompt_version
+        self.prompt = load_prompt("discovery", prompt_version)
+
     def process(self, investigation_input: dict[str, Any]) -> dict[str, Any]:
         business_name = investigation_input.get("business_name")
         gstin = investigation_input.get("gstin")
