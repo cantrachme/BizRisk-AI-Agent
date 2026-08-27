@@ -34,7 +34,9 @@ def normalize_evidence(res: Any) -> NormalizedEvidence:
     # Evidence SQLAlchemy model
     if hasattr(res, "research_result_id"):
         retrieved_dt = res.retrieved_timestamp
-        if retrieved_dt.tzinfo is None:
+        if retrieved_dt is None:
+            retrieved_dt = datetime.now(timezone.utc)
+        elif retrieved_dt.tzinfo is None:
             retrieved_dt = retrieved_dt.replace(tzinfo=timezone.utc)
         val = res.field_value
         try:
