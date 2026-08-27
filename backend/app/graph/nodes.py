@@ -316,36 +316,95 @@ def browser_node(state: InvestigationState) -> dict:
         new_results = []
 
         for task in pending_tasks:
+            reused_results = []
             if investigation_id:
                 from app.db.session import SessionLocal
-                from app.services.research_task import update_research_task_status
+                from app.services.evidence import get_evidences_for_investigation, is_evidence_fresh
+                from app.graph.state import ResearchResult
+                import json
+
                 with SessionLocal() as db:
-                    update_research_task_status(db, investigation_id, task.task_id, "STARTED")
+                    db_evidences = get_evidences_for_investigation(db, investigation_id)
 
-            task_results = agent.execute(task)
+                all_fields_fresh = True
+                task_reused_results = []
 
-            if task_results:
+                for field in task.required_fields:
+                    field_evs = [ev for ev in db_evidences if ev.field_name == field]
+                    fresh_evs = [ev for ev in field_evs if is_evidence_fresh(ev.retrieved_timestamp, field)]
+                    if not fresh_evs:
+                        all_fields_fresh = False
+                        break
+                    else:
+                        for ev in fresh_evs:
+                            try:
+                                parsed_val = json.loads(ev.field_value)
+                            except Exception:
+                                parsed_val = ev.field_value
+
+                            task_reused_results.append(
+                                ResearchResult(
+                                    result_id=ev.research_result_id,
+                                    task_id=task.task_id,
+                                    field_name=ev.field_name,
+                                    field_value=parsed_val,
+                                    source_name=ev.source_name,
+                                    source_url=ev.source_url,
+                                    retrieved_at=ev.retrieved_timestamp.isoformat(),
+                                    confidence=ev.confidence,
+                                )
+                            )
+
+                if all_fields_fresh and task_reused_results:
+                    reused_results = task_reused_results
+
+            if reused_results:
+                # Sufficient fresh evidence exists -> Reuse it, do not invoke the browser
                 completed_tasks.append(
                     task.model_copy(update={"status": "COMPLETED"})
                 )
-                results.extend(task_results)
-                new_results.extend(task_results)
+                results.extend(reused_results)
                 if investigation_id:
+                    from app.db.session import SessionLocal
+                    from app.services.research_task import update_research_task_status
                     with SessionLocal() as db:
                         update_research_task_status(db, investigation_id, task.task_id, "COMPLETED")
             else:
-                failed_tasks.append(
-                    task.model_copy(update={"status": "FAILED"})
-                )
+                # Otherwise execute browser task normally
                 if investigation_id:
+                    from app.db.session import SessionLocal
+                    from app.services.research_task import update_research_task_status
                     with SessionLocal() as db:
-                        update_research_task_status(
-                            db,
-                            investigation_id,
-                            task.task_id,
-                            "FAILED",
-                            error="No results returned"
-                        )
+                        update_research_task_status(db, investigation_id, task.task_id, "STARTED")
+
+                task_results = agent.execute(task)
+
+                if task_results:
+                    completed_tasks.append(
+                        task.model_copy(update={"status": "COMPLETED"})
+                    )
+                    results.extend(task_results)
+                    new_results.extend(task_results)
+                    if investigation_id:
+                        from app.db.session import SessionLocal
+                        from app.services.research_task import update_research_task_status
+                        with SessionLocal() as db:
+                            update_research_task_status(db, investigation_id, task.task_id, "COMPLETED")
+                else:
+                    failed_tasks.append(
+                        task.model_copy(update={"status": "FAILED"})
+                    )
+                    if investigation_id:
+                        from app.db.session import SessionLocal
+                        from app.services.research_task import update_research_task_status
+                        with SessionLocal() as db:
+                            update_research_task_status(
+                                db,
+                                investigation_id,
+                                task.task_id,
+                                "FAILED",
+                                error="No results returned"
+                            )
 
         if investigation_id_str and new_results:
             try:

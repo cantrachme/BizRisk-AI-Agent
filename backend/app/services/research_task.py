@@ -16,15 +16,24 @@ def save_research_tasks(
 ) -> List[ResearchTaskModel]:
     """
     Saves a list of graph ResearchTask schemas to the persistent database.
+    Prevents duplicate ResearchTask rows for the same investigation_id, task_type, target, and objective.
     Updates existing tasks and increments retry counts if retried.
     """
+    from sqlalchemy import func
     persisted = []
     for task in tasks:
+        norm_task_type = str(task.task_type).strip().upper()
+        norm_target = str(task.target).strip().lower()
+        norm_objective = str(task.objective).strip().lower()
+
+        # Find existing task based on normalized task identity (TRD Quality Phase 1)
         existing = (
             db.query(ResearchTaskModel)
             .filter(
                 ResearchTaskModel.investigation_id == investigation_id,
-                ResearchTaskModel.task_id == task.task_id,
+                func.upper(func.trim(ResearchTaskModel.task_type)) == norm_task_type,
+                func.lower(func.trim(ResearchTaskModel.target)) == norm_target,
+                func.lower(func.trim(ResearchTaskModel.objective)) == norm_objective,
             )
             .first()
         )
@@ -33,8 +42,8 @@ def save_research_tasks(
             if existing.completed_at or existing.started_at or existing.status in {"COMPLETED", "FAILED"}:
                 existing.retry_count += 1
             existing.status = task.status or "PENDING"
-            existing.target = task.target
-            existing.objective = task.objective
+            # Update the graph task_id reference to ensure correct graph execution tracking
+            existing.task_id = task.task_id
             existing.started_at = None
             existing.completed_at = None
             existing.error_info = None
