@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +24,26 @@ class Settings(BaseSettings):
     evidence_freshness_mca_days: int = 30
     evidence_freshness_website_days: int = 30
     evidence_freshness_default_days: int = 30
+
+    max_research_depth: int = 3
+    max_browser_actions: int = 20
+    max_research_tasks: int = 15
+    max_llm_calls: int = 50
+    token_budget: int = 100000
+
+    @field_validator(
+        "max_research_depth",
+        "max_browser_actions",
+        "max_research_tasks",
+        "max_llm_calls",
+        "token_budget",
+        mode="after",
+    )
+    @classmethod
+    def validate_positive_limits(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("Limit must be non-negative")
+        return v
 
     model_config = SettingsConfigDict(
         env_file=".env",

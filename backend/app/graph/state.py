@@ -42,5 +42,11 @@ class InvestigationState(TypedDict):
     report: Optional[Dict[str, Any]]
     qa_result: Optional[Dict[str, Any]]
     qa_loop_count: int
+    research_depth: int
+    browser_actions: int
+    browser_tasks_count: int
+    llm_calls: int
+    token_usage: int
+    stop_reason: Optional[str]
 
 MAX_PLANNER_LOOPS = 3

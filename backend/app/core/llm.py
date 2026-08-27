@@ -85,6 +85,16 @@ class MockLLMProvider(BaseLLMProvider):
         schema: Type[BaseModel],
         system_instruction: Optional[str] = None,
     ) -> BaseModel:
+        from app.core.tracking import llm_calls_var, token_usage_var
+        from app.core.config import get_settings
+        settings = get_settings()
+
+        # Check BEFORE starting the call
+        if llm_calls_var.get() >= settings.max_llm_calls:
+            raise LLMProviderException("Max LLM calls limit reached")
+        if token_usage_var.get() >= settings.token_budget:
+            raise LLMProviderException("Token budget exhausted")
+
         logger.info(
             f"Generating structured output using mock provider; model={self.model}, temp={self.temperature}"
         )
@@ -93,6 +103,15 @@ class MockLLMProvider(BaseLLMProvider):
             raise LLMProviderException(
                 f"API keys and configuration for production provider '{self.provider}' are missing."
             )
+
+        # Estimate token usage
+        prompt_tokens = len(prompt) // 4
+        response_tokens = 100
+        total_tokens = prompt_tokens + response_tokens
+
+        # Increment counters
+        llm_calls_var.set(llm_calls_var.get() + 1)
+        token_usage_var.set(token_usage_var.get() + total_tokens)
 
         return self._generate_mock_output(schema)
 
