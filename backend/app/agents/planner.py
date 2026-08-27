@@ -73,6 +73,33 @@ class PlannerAgent:
                 if location:
                     target_str += f" in {location}" if target_str else location
                 
+        # Fetch sources from registry
+        from app.db.session import SessionLocal
+        from app.services.source_registry import get_preferred_sources
+
+        gst_pref, gst_fall = ["gst.gov.in"], ["third_party"]
+        mca_pref, mca_fall = ["mca.gov.in"], ["third_party"]
+        web_pref, web_fall = ["company_website"], ["generic_web"]
+        disc_pref, disc_fall = ["generic_web"], []
+
+        try:
+            with SessionLocal() as db:
+                gst_pref, gst_fall = get_preferred_sources(db, "GST_VERIFICATION")
+                mca_pref, mca_fall = get_preferred_sources(db, "MCA_VERIFICATION")
+                web_pref, web_fall = get_preferred_sources(db, "WEBSITE_VERIFICATION")
+                disc_pref, disc_fall = get_preferred_sources(db, "ENTITY_DISCOVERY")
+        except Exception:
+            pass
+
+        # 2. Schedule Entity Discovery if no specific identifiers are available
+        if not target_gstin and not target_cin:
+            if "ENTITY_DISCOVERY" not in scheduled_task_types:
+                target_str = ""
+                if business_name:
+                    target_str += business_name
+                if location:
+                    target_str += f" in {location}" if target_str else location
+
                 if target_str:
                     new_tasks.append(
                         ResearchTask(
@@ -82,8 +109,8 @@ class PlannerAgent:
                             objective="Search public records to discover matching legal entities, GSTIN, and CIN.",
                             required_fields=["candidate_entities"],
                             priority=1,
-                            preferred_sources=["generic_web"],
-                            fallback_sources=[]
+                            preferred_sources=disc_pref,
+                            fallback_sources=disc_fall
                         )
                     )
 
@@ -98,8 +125,8 @@ class PlannerAgent:
                         objective=f"Verify GSTIN {target_gstin} and retrieve registration status and details.",
                         required_fields=["legal_name", "gst_status", "registered_address", "business_activity"],
                         priority=1,
-                        preferred_sources=["gst.gov.in"],
-                        fallback_sources=["third_party"]
+                        preferred_sources=gst_pref,
+                        fallback_sources=gst_fall
                     )
                 )
 
@@ -114,8 +141,8 @@ class PlannerAgent:
                         objective=f"Verify CIN {target_cin} and retrieve company registration details.",
                         required_fields=["legal_name", "company_status", "incorporation_date", "registered_address"],
                         priority=1,
-                        preferred_sources=["mca.gov.in"],
-                        fallback_sources=["third_party"]
+                        preferred_sources=mca_pref,
+                        fallback_sources=mca_fall
                     )
                 )
 
@@ -130,8 +157,8 @@ class PlannerAgent:
                         objective=f"Analyze company website {target_website} to verify business claims and contact details.",
                         required_fields=["website_status", "contact_address", "established_year"],
                         priority=2,
-                        preferred_sources=["company_website"],
-                        fallback_sources=["generic_web"]
+                        preferred_sources=web_pref,
+                        fallback_sources=web_fall
                     )
                 )
 
