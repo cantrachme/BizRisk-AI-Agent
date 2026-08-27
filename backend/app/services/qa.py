@@ -9,6 +9,74 @@ from app.services.evidence import get_evidences_for_investigation
 from app.services.report import generate_investigation_report
 from app.services.risk_analysis import analyze_investigation
 
+def validate_report_grounding(
+    db: Session,
+    investigation_id: uuid.UUID,
+    report: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Validates that report findings containing evidence references point to valid Evidence IDs
+    belonging to the same investigation.
+    """
+    from app.services.evidence import get_evidences_for_investigation
+    from app.models.evidence import Evidence
+
+    db_evidences = get_evidences_for_investigation(db, investigation_id)
+    db_evidence_ids = {ev.research_result_id for ev in db_evidences}
+
+    issues = []
+    findings = report.get("major_findings") or []
+    valid_findings = 0
+    total_findings = len(findings)
+
+    for finding in findings:
+        desc = finding.get("description") or ""
+        evidence_ids = finding.get("evidence_ids")
+
+        # 1. Missing evidence_ids list or non-list
+        if evidence_ids is None or not isinstance(evidence_ids, list):
+            issues.append({
+                "type": "MISSING_EVIDENCE",
+                "finding": f"Finding '{desc}' has no supporting evidence IDs list."
+            })
+            continue
+
+        # 2. Required evidence references missing (finding exists but list is empty)
+        if not evidence_ids and finding.get("code"):
+            issues.append({
+                "type": "MISSING_EVIDENCE",
+                "finding": f"Finding '{desc}' has required evidence references missing."
+            })
+            continue
+
+        valid_refs = True
+        for ev_id in evidence_ids:
+            # 3. Accept only valid Evidence IDs that exist in DB
+            ev_in_db = db.query(Evidence).filter(Evidence.research_result_id == ev_id).first()
+            if not ev_in_db:
+                valid_refs = False
+                issues.append({
+                    "type": "MISSING_EVIDENCE",
+                    "finding": f"Finding '{desc}' references non-existent evidence ID '{ev_id}'."
+                })
+            # 4. Ensure referenced evidence belongs to the same investigation
+            elif ev_in_db.investigation_id != investigation_id:
+                valid_refs = False
+                issues.append({
+                    "type": "MISSING_EVIDENCE",
+                    "finding": f"Finding '{desc}' references evidence ID '{ev_id}' belonging to another investigation."
+                })
+
+        if valid_refs:
+            valid_findings += 1
+
+    evidence_coverage = (valid_findings / total_findings) if total_findings > 0 else 1.0
+    return {
+        "is_valid": len(issues) == 0,
+        "issues": issues,
+        "evidence_coverage": evidence_coverage,
+    }
+
 
 def validate_report(
     db: Session,
@@ -30,42 +98,34 @@ def validate_report(
 
     # 2. Retrieve persisted Evidence
     db_evidences = get_evidences_for_investigation(db, investigation_id)
-    db_evidence_ids = {ev.research_result_id for ev in db_evidences}
 
-    # 3. Retrieve structured report
-    report = generate_investigation_report(db, investigation_id)
+    # 3. Retrieve structured report from DB or generate if not exists
+    from app.models.report import Report
+    latest_report = (
+        db.query(Report)
+        .filter(Report.investigation_id == investigation_id)
+        .order_by(Report.version.desc())
+        .first()
+    )
+    if latest_report:
+        report = json.loads(latest_report.report_json)
+    else:
+        report = generate_investigation_report(db, investigation_id)
 
     issues = []
-    evidence_coverage = 1.0
     score_verified = True
     entity_verified = True
 
-    # Check A: Evidence Coverage & Traceability
-    findings = report.get("major_findings") or []
-    valid_findings = 0
-    total_findings = len(findings)
+    # Check A: Evidence Coverage & Grounding Validation
+    grounding_res = validate_report_grounding(db, investigation_id, report)
+    issues.extend(grounding_res["issues"])
+    evidence_coverage = grounding_res["evidence_coverage"]
 
+    # Now run the remaining checks (Check E & F, and entity/score verification)
+    findings = report.get("major_findings") or []
     for finding in findings:
         desc = finding.get("description") or ""
-        evidence_ids = finding.get("evidence_ids")
-        if not evidence_ids or not isinstance(evidence_ids, list):
-            issues.append({
-                "type": "MISSING_EVIDENCE",
-                "finding": f"Finding '{desc}' has no supporting evidence IDs list."
-            })
-            continue
-
-        valid_refs = True
-        for ev_id in evidence_ids:
-            if ev_id not in db_evidence_ids:
-                valid_refs = False
-                issues.append({
-                    "type": "MISSING_EVIDENCE",
-                    "finding": f"Finding '{desc}' references non-existent evidence ID '{ev_id}'."
-                })
-
-        if valid_refs:
-            valid_findings += 1
+        evidence_ids = finding.get("evidence_ids") or []
 
         # Check E: Language Safety
         desc_lower = desc.lower()
@@ -98,13 +158,10 @@ def validate_report(
                             "finding": f"Finding GST inactive contradicts actual GST status evidence: '{ev.field_value}'."
                         })
 
-    if total_findings > 0:
-        evidence_coverage = valid_findings / total_findings
-
     # Check B: Entity Verification
     entity = report.get("entity") or {}
     entity_confidence = report.get("entity_confidence")
-    
+
     # Entity must be non-empty and confidence >= 0.5 (TRD threshold)
     if not entity or entity.get("business_name") is None:
         entity_verified = False
@@ -132,8 +189,7 @@ def validate_report(
 
     status_str = "PASS" if not issues else "FAIL"
 
-    # Update persisted report QA status
-    from app.models.report import Report
+    # Update persisted report QA status for this specific version being evaluated
     latest_report = (
         db.query(Report)
         .filter(Report.investigation_id == investigation_id)
