@@ -22,7 +22,14 @@ def validate_report_grounding(
     from app.models.evidence import Evidence
 
     db_evidences = get_evidences_for_investigation(db, investigation_id)
-    db_evidence_ids = {ev.research_result_id for ev in db_evidences}
+
+    # Build the evidence index only from evidence belonging to this
+    # investigation. This also avoids an unscoped Evidence lookup.
+    db_evidence_by_result_id = {
+        ev.research_result_id: ev
+        for ev in db_evidences
+        if ev.research_result_id
+    }
 
     issues = []
     findings = report.get("major_findings") or []
@@ -51,20 +58,37 @@ def validate_report_grounding(
 
         valid_refs = True
         for ev_id in evidence_ids:
-            # 3. Accept only valid Evidence IDs that exist in DB
-            ev_in_db = db.query(Evidence).filter(Evidence.research_result_id == ev_id).first()
-            if not ev_in_db:
-                valid_refs = False
+            # 3. First require the evidence to belong to this investigation.
+            ev_in_db = db_evidence_by_result_id.get(ev_id)
+
+            if ev_in_db:
+                continue
+
+            # 4. If it is not in this investigation, distinguish a genuinely
+            #    missing evidence ID from an ID belonging to another investigation.
+            other_ev = (
+                db.query(Evidence)
+                .filter(Evidence.research_result_id == ev_id)
+                .first()
+            )
+
+            valid_refs = False
+
+            if other_ev:
                 issues.append({
                     "type": "MISSING_EVIDENCE",
-                    "finding": f"Finding '{desc}' references non-existent evidence ID '{ev_id}'."
+                    "finding": (
+                        f"Finding '{desc}' references evidence ID '{ev_id}' "
+                        "belonging to another investigation."
+                    )
                 })
-            # 4. Ensure referenced evidence belongs to the same investigation
-            elif ev_in_db.investigation_id != investigation_id:
-                valid_refs = False
+            else:
                 issues.append({
                     "type": "MISSING_EVIDENCE",
-                    "finding": f"Finding '{desc}' references evidence ID '{ev_id}' belonging to another investigation."
+                    "finding": (
+                        f"Finding '{desc}' references non-existent evidence ID "
+                        f"'{ev_id}'."
+                    )
                 })
 
         if valid_refs:

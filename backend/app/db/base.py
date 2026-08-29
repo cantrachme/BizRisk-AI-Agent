@@ -18,3 +18,4 @@ from app.models.candidate_entity import CandidateEntity  # noqa: F401
 from app.models.browser_session import BrowserSession  # noqa: F401
 from app.models.browser_artifact import BrowserArtifact  # noqa: F401
 from app.models.source_registry import SourceRegistry  # noqa: F401
+from app.models.user import User  # noqa: F401

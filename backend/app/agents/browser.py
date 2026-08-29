@@ -142,6 +142,15 @@ class BrowserResearchAgent:
                 source_name = source
                 source_url = None
                 confidence = 0.50
+        elif source in SOURCES:
+            # Source registry names are administrative identifiers; the
+            # browser result must expose the canonical human-readable name.
+            canonical_name, canonical_url, canonical_confidence = SOURCES[source]
+            source_name = canonical_name
+            if source_url is None:
+                source_url = canonical_url
+            if confidence is None:
+                confidence = canonical_confidence
 
         research_url = self._resolve_url(
             task=task,

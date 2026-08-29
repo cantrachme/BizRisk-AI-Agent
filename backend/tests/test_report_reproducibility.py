@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
 from app.graph.state import ResearchResult
@@ -22,9 +21,8 @@ from app.services.qa import validate_report, validate_report_grounding
 @pytest.fixture(name="db_session")
 def fixture_db_session():
     engine = create_engine(
-        "sqlite:///:memory:",
+        "sqlite:///./test_report_reproducibility.db",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     Base.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(
