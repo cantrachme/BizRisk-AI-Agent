@@ -7,3 +7,5 @@ pydantic-settings
 SQLAlchemy
 psycopg[binary]
 alembic
+
+playwright
