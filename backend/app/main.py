@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import investigations_router
+from app.api import investigations_router, test_router
 from app.core.config import get_settings
 
 
@@ -22,6 +22,7 @@ app.add_middleware(
 )
 
 app.include_router(investigations_router, prefix="/api/v1")
+app.include_router(test_router, prefix="/api/v1")
 
 
 @app.get("/")

@@ -636,3 +636,36 @@ def export_investigation_report_csv(
     db: Session = Depends(get_db),
 ):
     return export_investigation_report(format="csv", investigation=investigation, db=db)
+
+
+test_router = APIRouter(tags=["testing"])
+
+from pydantic import BaseModel, Field
+
+
+class IntakeTestRequest(BaseModel):
+    business_name: str | None = None
+    gstin: str | None = None
+    cin: str | None = None
+    epfo_code: str | None = None
+    website: str | None = None
+    location: str | None = None
+    people: list[str] | None = Field(default_factory=list)
+
+
+class IntakeTestResponse(BaseModel):
+    business_name: str | None = None
+    gstin: str | None = None
+    cin: str | None = None
+    epfo_code: str | None = None
+    website: str | None = None
+    location: str | None = None
+    people: list[str] | None = Field(default_factory=list)
+
+
+@test_router.post("/test/intake", response_model=IntakeTestResponse)
+def test_intake(payload: IntakeTestRequest) -> dict:
+    from app.agents.intake import IntakeAgent
+    agent = IntakeAgent()
+    return agent.process(payload.model_dump())
+
