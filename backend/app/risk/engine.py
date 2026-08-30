@@ -66,8 +66,23 @@ def calculate_risk_analysis(
     # Normalize incoming raw evidence
     normalized_evs = [normalize_evidence(ev) for ev in evidences_raw]
 
-    # Evaluate rules
-    triggered_rules = run_all_rules(normalized_evs)
+    # Only validated, traceable evidence may participate in risk scoring.
+    # Reject malformed evidence rather than allowing an ungrounded rule to affect score.
+    validated_evs = []
+    seen_ids = set()
+    for ev in normalized_evs:
+        evidence_id = str(ev.id).strip() if ev.id is not None else ""
+        if not evidence_id or evidence_id in seen_ids:
+            continue
+        if not str(ev.source_name).strip() or not str(ev.field_name).strip():
+            continue
+        if not (0.0 <= float(ev.confidence) <= 1.0):
+            continue
+        seen_ids.add(evidence_id)
+        validated_evs.append(ev)
+
+    # Evaluate deterministic rules only against validated evidence.
+    triggered_rules = run_all_rules(validated_evs)
 
     active_signals = []
     active_weights = []

@@ -4,9 +4,11 @@ from app.graph.state import ResearchResult
 from datetime import datetime, timezone
 
 
+import uuid
+
 def make_evidence(field_name, field_value, source_name="Test Source", confidence=1.0):
     return ResearchResult(
-        result_id=f"EV-{field_name}",
+        result_id=f"EV-{field_name}-{uuid.uuid4().hex[:6]}",
         task_id="TASK-001",
         field_name=field_name,
         field_value=field_value,
