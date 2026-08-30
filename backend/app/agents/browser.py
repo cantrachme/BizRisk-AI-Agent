@@ -231,10 +231,19 @@ class BrowserResearchAgent:
             if research_url is None:
                 continue
 
+            print(f"\n[DIAGNOSTIC] === Browser Research Agent Attempt ===", flush=True)
+            print(f"[DIAGNOSTIC] Task Name: {task.task_type}", flush=True)
+            print(f"[DIAGNOSTIC] Target Company/Identifier: {task.target}", flush=True)
+            print(f"[DIAGNOSTIC] Selected Source Name: {source_name} ({source})", flush=True)
+            print(f"[DIAGNOSTIC] Resolved URL: {research_url}", flush=True)
+
             try:
                 html = self.fetcher(research_url)
+                print(f"[DIAGNOSTIC] Browser navigation succeeded.", flush=True)
+                
                 intervention_type = detect_human_intervention(html)
                 if intervention_type:
+                    print(f"[DIAGNOSTIC] HUMAN INTERVENTION REQUIRED: {intervention_type}", flush=True)
                     raise HumanInterventionRequiredException(
                         message=f"Human intervention required: {intervention_type}",
                         intervention_type=intervention_type
@@ -242,10 +251,19 @@ class BrowserResearchAgent:
                 
                 failure_reason = self._is_failed_or_blocked_retrieval(html, task.target)
                 if failure_reason:
+                    print(f"[DIAGNOSTIC] Page classified as failed/blocked or irrelevant. Reason: {failure_reason}", flush=True)
+                    print(f"[DIAGNOSTIC] Reaction: Attempting fallback source...", flush=True)
                     continue
                 
                 # Fetch succeeded and is not blocked/empty/irrelevant
                 page_data = self._extract_page_data(html)
+                print(f"[DIAGNOSTIC] Title: {page_data.get('title')}", flush=True)
+                print(f"[DIAGNOSTIC] Raw HTML length: {len(html)}", flush=True)
+                print(f"[DIAGNOSTIC] Extracted visible text length: {len(page_data.get('text', ''))}", flush=True)
+                print(f"[DIAGNOSTIC] Relevance check: PASSED", flush=True)
+                print(f"[DIAGNOSTIC] Assigned confidence: {confidence}", flush=True)
+                print(f"[DIAGNOSTIC] Final evidence status: AVAILABLE", flush=True)
+                
                 chosen_source = source_name
                 chosen_url = research_url
                 chosen_confidence = confidence
@@ -253,11 +271,16 @@ class BrowserResearchAgent:
                 break
             except HumanInterventionRequiredException:
                 raise
-            except Exception:
+            except Exception as ex:
+                print(f"[DIAGNOSTIC] Exception occurred during fetch: {ex}", flush=True)
+                print(f"[DIAGNOSTIC] Reaction: Attempting fallback source...", flush=True)
                 continue
 
         # If none of the candidates succeeded, use the first candidate with 0.0 confidence
         if chosen_page_data is None:
+            print(f"\n[DIAGNOSTIC] ALL configured sources failed for task {task.task_id}!", flush=True)
+            print(f"[DIAGNOSTIC] Final status: UNAVAILABLE", flush=True)
+            print(f"[DIAGNOSTIC] Final confidence: 0.0", flush=True)
             source = candidates[0]
             source_name, source_url, confidence = None, None, None
             is_mocked_db = False
@@ -397,19 +420,40 @@ class BrowserResearchAgent:
             if pattern in html_lower:
                 return "NO_RESULTS"
 
-        # 3. Minimum text content check (clearly irrelevant or empty navigation pages)
-        # Only run for long pages (word count > 100) to keep unit test mock compatibility
+        # 3. Generic Relevance Validation
         page_data = BrowserResearchAgent._extract_page_data(html)
         page_text = page_data.get("text") or ""
         
         words = page_text.split()
         if len(words) > 100:
-            target_lower = str(target).lower()
-            if any(c.isdigit() for c in target_lower) and len(target_lower) > 5:
+            target_lower = str(target).lower().strip()
+            
+            # Case A: target is a URL or domain
+            if BrowserResearchAgent._is_url(target_lower) or "." in target_lower or "/" in target_lower:
+                domain = target_lower
+                if "://" in domain:
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(domain)
+                        domain = parsed.netloc or domain
+                    except Exception:
+                        pass
+                domain = re.sub(r"^(www\.)?", "", domain)
+                domain_prefix = domain.split(".")[0]
+                
+                # Check if the domain name suffix/prefix is in the text
+                if len(domain_prefix) > 2:
+                    if domain_prefix not in re.sub(r"\s+", "", page_text.lower()):
+                        return "IRRELEVANT_CONTENT"
+            
+            # Case B: target is a GSTIN / CIN / code (has numbers and letters)
+            elif any(c.isdigit() for c in target_lower) and len(target_lower) > 5:
                 normalized_target = re.sub(r"\s+", "", target_lower)
                 normalized_text = re.sub(r"\s+", "", page_text.lower())
                 if normalized_target not in normalized_text:
                     return "IRRELEVANT_CONTENT"
+            
+            # Case C: target is a company name
             else:
                 stop_words = {"limited", "pvt", "ltd", "private", "corporation", "corp", "inc", "incorporated", "co", "company", "and", "the"}
                 target_words = [w for w in re.findall(r"\b\w+\b", target_lower) if w not in stop_words and len(w) > 2]
