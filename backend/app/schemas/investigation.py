@@ -5,6 +5,7 @@ class InvestigationCreate(BaseModel):
     business_name: str | None = Field(default=None, max_length=255)
     gstin: str | None = Field(default=None, max_length=15)
     cin: str | None = Field(default=None, max_length=21)
+    epfo_code: str | None = Field(default=None, max_length=100)
     website: str | None = Field(default=None, max_length=500)
     location: str | None = Field(default=None, max_length=255)
     additional_information: str | None = None

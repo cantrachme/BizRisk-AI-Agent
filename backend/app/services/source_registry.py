@@ -76,6 +76,7 @@ def enable_source(db: Session, source_id: uuid.UUID, enabled: bool = True) -> Op
 CANONICAL_SOURCE_MAP = {
     "GST Portal": "gst.gov.in",
     "MCA Portal": "mca.gov.in",
+    "EPFO Portal": "epfindia.gov.in",
     "Company Website": "company_website",
     "General Web": "generic_web",
     "Third-Party Source": "third_party",
@@ -99,6 +100,8 @@ def get_preferred_sources(db: Session, task_type: str) -> Tuple[List[str], List[
             return ["gst.gov.in"], ["third_party"]
         elif task_type == "MCA_VERIFICATION":
             return ["mca.gov.in"], ["third_party"]
+        elif task_type == "EPFO_VERIFICATION":
+            return ["epfindia.gov.in"], ["third_party"]
         elif task_type == "WEBSITE_VERIFICATION":
             return ["company_website"], ["generic_web"]
         return [], []
@@ -148,6 +151,22 @@ def populate_default_sources(db: Session) -> None:
         {
             "name": "third_party",
             "type": "MCA_VERIFICATION",
+            "domain": None,
+            "enabled": True,
+            "priority": 2,
+            "config": {"confidence": 0.50}
+        },
+        {
+            "name": "epfindia.gov.in",
+            "type": "EPFO_VERIFICATION",
+            "domain": "https://www.epfindia.gov.in",
+            "enabled": True,
+            "priority": 1,
+            "config": {"confidence": 0.90}
+        },
+        {
+            "name": "third_party",
+            "type": "EPFO_VERIFICATION",
             "domain": None,
             "enabled": True,
             "priority": 2,

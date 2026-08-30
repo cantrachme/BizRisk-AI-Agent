@@ -39,120 +39,121 @@ def generate_investigation_report(
     """
     Generates a structured, evidence-backed report for the given investigation_id.
     """
-    # 1. Load the Investigation
-    investigation = db.get(Investigation, investigation_id)
-    if not investigation:
-        raise ValueError(f"Investigation with ID {investigation_id} not found.")
-
-    # 2. Retrieve persisted Evidence objects
-    evidences = get_evidences_for_investigation(db, investigation_id)
-
-    # 3. Perform Entity Resolution on the fly
-    raw_input = json.loads(investigation.input_data)
-    normalized_input = IntakeAgent().process(raw_input)
-
-    candidates = []
-    for ev in evidences:
-        if ev.field_name == "candidate_entities":
-            try:
-                val = json.loads(ev.field_value)
-                if isinstance(val, list):
-                    candidates.extend(val)
-            except Exception:
-                pass
-
-    resolution = resolve_entity(normalized_input, candidates)
-    entity = resolution["entity"] or {}
-    if entity and "business_name" not in entity and "name" in entity:
-        entity["business_name"] = entity["name"]
-    entity_confidence = resolution["confidence"] or 0.0
-
-    # 4. Obtain the current deterministic risk analysis
-    analysis = analyze_investigation(db, investigation_id)
-
-    # 5. Map risk signals to findings
-    major_findings = []
-    for sig in analysis["risk_signals"]:
-        major_findings.append({
-            "code": sig["code"],
-            "category": sig["category"],
-            "severity": sig["severity"],
-            "description": sig["description"],
-            "evidence_ids": sig["evidence_ids"],
-            "confidence": sig["confidence"],
-            "risk_weight": sig["risk_weight"],
-        })
-
-    # 6. Map evidence to summary
-    evidence_summary = []
-    # Sort evidences by research_result_id deterministically
-    sorted_evidences = sorted(evidences, key=lambda x: x.research_result_id)
-    for ev in sorted_evidences:
-        val = ev.field_value
-        try:
-            val_loaded = json.loads(val)
-            if isinstance(val_loaded, (list, dict)):
-                val = val_loaded
-        except (ValueError, TypeError):
-            pass
-
-        retrieved_timestamp_str = ""
-        if ev.retrieved_timestamp:
-            retrieved_dt = ev.retrieved_timestamp
-            if retrieved_dt.tzinfo is None:
-                retrieved_dt = retrieved_dt.replace(tzinfo=timezone.utc)
-            retrieved_timestamp_str = retrieved_dt.isoformat()
-
-        evidence_summary.append({
-            "evidence_id": ev.research_result_id,
-            "task_id": ev.task_id,
-            "field_name": ev.field_name,
-            "field_value": val,
-            "source_name": ev.source_name,
-            "source_url": ev.source_url,
-            "retrieved_at": retrieved_timestamp_str,
-            "confidence": ev.confidence,
-        })
-
-    # 7. Construct the report dict
-    report_dict = {
-        "entity": entity,
-        "entity_confidence": entity_confidence,
-        "overall_risk": {
-            "score": analysis["overall_risk"]["score"],
-            "level": analysis["overall_risk"]["level"],
-        },
-        "category_scores": analysis["category_scores"],
-        "major_findings": major_findings,
-        "positive_findings": [],
-        "unverified_information": [],
-        "recommendation": generate_recommendation(analysis["overall_risk"]["score"]),
-        "evidence_summary": evidence_summary,
-        "meta": {
-            "rule_version": "1.0.0",
-            "report_version": "1.0.0",
-            "prompt_version": {
-                "intake": "v1",
-                "discovery": "v1",
-                "planner": "v1",
-                "entity_resolution": "v1",
-                "risk_analysis": "v1",
-                "report": prompt_version,
-                "qa": "v1",
-            },
-            "model_version": resolved_llm.model if hasattr(resolved_llm, "model") else settings.llm_model,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-        }
-    }
-
-    # 8. Persist the report
-    from app.models.report import Report
     from app.db.session import db_lock
-    from app.risk.engine import RISK_RULE_VERSION
-
-    report_dict["meta"]["rule_version"] = RISK_RULE_VERSION
 
     with db_lock:
+        # 1. Load the Investigation
+        investigation = db.get(Investigation, investigation_id)
+        if not investigation:
+            raise ValueError(f"Investigation with ID {investigation_id} not found.")
+
+        # 2. Retrieve persisted Evidence objects
+        evidences = get_evidences_for_investigation(db, investigation_id)
+
+        # 3. Perform Entity Resolution on the fly
+        raw_input = json.loads(investigation.input_data)
+        normalized_input = IntakeAgent().process(raw_input)
+
+        candidates = []
+        for ev in evidences:
+            if ev.field_name == "candidate_entities":
+                try:
+                    val = json.loads(ev.field_value)
+                    if isinstance(val, list):
+                        candidates.extend(val)
+                except Exception:
+                    pass
+
+        resolution = resolve_entity(normalized_input, candidates)
+        entity = resolution["entity"] or {}
+        if entity and "business_name" not in entity and "name" in entity:
+            entity["business_name"] = entity["name"]
+        entity_confidence = resolution["confidence"] or 0.0
+
+        # 4. Obtain the current deterministic risk analysis
+        analysis = analyze_investigation(db, investigation_id)
+
+        # 5. Map risk signals to findings
+        major_findings = []
+        for sig in analysis["risk_signals"]:
+            major_findings.append({
+                "code": sig["code"],
+                "category": sig["category"],
+                "severity": sig["severity"],
+                "description": sig["description"],
+                "evidence_ids": sig["evidence_ids"],
+                "confidence": sig["confidence"],
+                "risk_weight": sig["risk_weight"],
+            })
+
+        # 6. Map evidence to summary
+        evidence_summary = []
+        # Sort evidences by research_result_id deterministically
+        sorted_evidences = sorted(evidences, key=lambda x: x.research_result_id)
+        for ev in sorted_evidences:
+            val = ev.field_value
+            try:
+                val_loaded = json.loads(val)
+                if isinstance(val_loaded, (list, dict)):
+                    val = val_loaded
+            except (ValueError, TypeError):
+                pass
+
+            retrieved_timestamp_str = ""
+            if ev.retrieved_timestamp:
+                retrieved_dt = ev.retrieved_timestamp
+                if retrieved_dt.tzinfo is None:
+                    retrieved_dt = retrieved_dt.replace(tzinfo=timezone.utc)
+                retrieved_timestamp_str = retrieved_dt.isoformat()
+
+            evidence_summary.append({
+                "evidence_id": ev.research_result_id,
+                "task_id": ev.task_id,
+                "field_name": ev.field_name,
+                "field_value": val,
+                "source_name": ev.source_name,
+                "source_url": ev.source_url,
+                "retrieved_at": retrieved_timestamp_str,
+                "confidence": ev.confidence,
+            })
+
+        # 7. Construct the report dict
+        report_dict = {
+            "entity": entity,
+            "entity_confidence": entity_confidence,
+            "overall_risk": {
+                "score": analysis["overall_risk"]["score"],
+                "level": analysis["overall_risk"]["level"],
+            },
+            "category_scores": analysis["category_scores"],
+            "major_findings": major_findings,
+            "positive_findings": [],
+            "unverified_information": [],
+            "recommendation": generate_recommendation(analysis["overall_risk"]["score"]),
+            "evidence_summary": evidence_summary,
+            "meta": {
+                "rule_version": "1.0.0",
+                "report_version": "1.0.0",
+                "prompt_version": {
+                    "intake": "v1",
+                    "discovery": "v1",
+                    "planner": "v1",
+                    "entity_resolution": "v1",
+                    "risk_analysis": "v1",
+                    "report": prompt_version,
+                    "qa": "v1",
+                },
+                "model_version": resolved_llm.model if hasattr(resolved_llm, "model") else settings.llm_model,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        }
+
+        # 8. Persist the report
+        from app.models.report import Report
+        from app.risk.engine import RISK_RULE_VERSION
+
+        report_dict["meta"]["rule_version"] = RISK_RULE_VERSION
+
         try:
             latest_report = (
                 db.query(Report)

@@ -13,6 +13,7 @@ from app.core.exceptions import HumanInterventionRequiredException
 SOURCES = {
     "gst.gov.in": ("GST Portal", "https://www.gst.gov.in", 0.95),
     "mca.gov.in": ("MCA Portal", "https://www.mca.gov.in", 0.95),
+    "epfindia.gov.in": ("EPFO Portal", "https://www.epfindia.gov.in", 0.90),
     "company_website": ("Company Website", None, 0.85),
     "generic_web": ("General Web", None, 0.60),
     "third_party": ("Third-Party Source", None, 0.50),
@@ -24,6 +25,7 @@ SUPPORTED_TASK_TYPES = {
     "ENTITY_DISCOVERY",
     "GST_VERIFICATION",
     "MCA_VERIFICATION",
+    "EPFO_VERIFICATION",
     "WEBSITE_VERIFICATION",
     "GENERAL_WEB_RESEARCH",
 }
@@ -432,12 +434,14 @@ class BrowserResearchAgent:
             "legal_name",
             "company_name",
             "business_name",
+            "establishment_name",
         }:
             return title or task.target
 
         if field_name in {
             "gst_status",
             "mca_status",
+            "epfo_status",
             "website_status",
         }:
             return "AVAILABLE" if text else "UNAVAILABLE"

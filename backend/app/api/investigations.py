@@ -1,7 +1,9 @@
+import csv
+import io
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -23,6 +25,7 @@ def create_investigation(
             payload.business_name,
             payload.gstin,
             payload.cin,
+            payload.epfo_code,
             payload.website,
         ]
     ):
@@ -55,21 +58,28 @@ def create_investigation(
 
 @router.get("/")
 def list_investigations(
+    status: str | None = None,
     current_user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> list:
     from app.models.investigation import Investigation
-    investigations = (
-        db.query(Investigation)
-        .filter(Investigation.user_id == current_user_id)
-        .all()
-    )
+    query = db.query(Investigation).filter(Investigation.user_id == current_user_id)
+    if status:
+        query = query.filter(Investigation.status == status)
+    investigations = query.order_by(Investigation.created_at.desc()).all()
     return [
         {
             "id": str(inv.id),
             "status": inv.status,
             "current_node": inv.current_node,
+            "input": json.loads(inv.input_data) if inv.input_data else {},
+            "risk_score": inv.risk_score,
+            "risk_level": inv.risk_level,
+            "resolved_entity_id": str(inv.resolved_entity_id) if inv.resolved_entity_id else None,
+            "entity_confidence": inv.entity_confidence,
+            "completed_at": inv.completed_timestamp.isoformat() if inv.completed_timestamp else None,
             "created_at": inv.created_at.isoformat() if inv.created_at else None,
+            "updated_at": inv.updated_at.isoformat() if inv.updated_at else None,
         }
         for inv in investigations
     ]
@@ -365,10 +375,21 @@ def resume_investigation(
 
     # 4. Reconstruct graph state and trigger execution
     from app.graph.workflow import app as graph_app
-    from app.services.investigation import recover_investigation_state
+    from app.services.investigation import recover_investigation_state, serialize_state
 
     state = recover_investigation_state(db, investigation.id)
     state["status"] = "PENDING_RESEARCH"
+    state["stop_reason"] = None
+    if state.get("pending_tasks"):
+        for t in state["pending_tasks"]:
+            if getattr(t, "status", None) == "HUMAN_INTERVENTION_REQUIRED":
+                t.status = "PENDING"
+
+    investigation.persistent_graph_state = serialize_state(state)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
 
     # Execute graph
     graph_app.invoke(state)
@@ -379,3 +400,164 @@ def resume_investigation(
         "id": str(investigation.id),
         "status": investigation.status,
     }
+
+
+@router.get("/{investigation_id}/history")
+def get_investigation_history(
+    investigation: Investigation = Depends(get_owned_investigation),
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.services.evidence import get_evidences_for_investigation
+    from app.services.research_task import get_research_tasks_for_investigation
+    from app.models.report import Report
+    from app.models.investigation_event import InvestigationEvent
+
+    evidences = get_evidences_for_investigation(db, investigation.id)
+    tasks = get_research_tasks_for_investigation(db, investigation.id)
+
+    latest_report = (
+        db.query(Report)
+        .filter(Report.investigation_id == investigation.id)
+        .order_by(Report.version.desc())
+        .first()
+    )
+
+    events = (
+        db.query(InvestigationEvent)
+        .filter(InvestigationEvent.investigation_id == investigation.id)
+        .order_by(InvestigationEvent.created_at.asc())
+        .all()
+    )
+
+    return {
+        "id": str(investigation.id),
+        "status": investigation.status,
+        "current_node": investigation.current_node,
+        "retry_count": investigation.retry_count,
+        "risk_score": investigation.risk_score,
+        "risk_level": investigation.risk_level,
+        "resolved_entity_id": str(investigation.resolved_entity_id) if investigation.resolved_entity_id else None,
+        "entity_confidence": investigation.entity_confidence,
+        "input_data": json.loads(investigation.input_data) if investigation.input_data else {},
+        "raw_input": json.loads(investigation.raw_input) if investigation.raw_input else {},
+        "normalized_input": json.loads(investigation.normalized_input) if investigation.normalized_input else {},
+        "tasks": [
+            {
+                "id": str(t.id),
+                "task_id": t.task_id,
+                "task_type": t.task_type,
+                "target": t.target,
+                "objective": t.objective,
+                "status": t.status,
+                "intervention_type": t.intervention_type,
+            }
+            for t in tasks
+        ],
+        "evidence_count": len(evidences),
+        "evidence_ids": [ev.research_result_id for ev in evidences],
+        "latest_report_version": latest_report.version if latest_report else None,
+        "event_count": len(events),
+        "created_at": investigation.created_at.isoformat() if investigation.created_at else None,
+        "completed_at": investigation.completed_timestamp.isoformat() if investigation.completed_timestamp else None,
+        "updated_at": investigation.updated_at.isoformat() if investigation.updated_at else None,
+    }
+
+
+def _build_report_csv(report: dict) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow(["=== ENTITY OVERVIEW ==="])
+    entity = report.get("entity") or {}
+    writer.writerow(["Business Name", entity.get("business_name") or entity.get("name") or "N/A"])
+    writer.writerow(["GSTIN", entity.get("gstin") or "N/A"])
+    writer.writerow(["CIN", entity.get("cin") or "N/A"])
+    writer.writerow(["Website", entity.get("website") or "N/A"])
+    writer.writerow(["Entity Confidence", report.get("entity_confidence", 0.0)])
+    writer.writerow([])
+
+    writer.writerow(["=== RISK SUMMARY ==="])
+    overall = report.get("overall_risk") or {}
+    writer.writerow(["Overall Risk Score", overall.get("score", 0)])
+    writer.writerow(["Overall Risk Level", overall.get("level", "UNKNOWN")])
+    writer.writerow(["Recommendation", report.get("recommendation", "")])
+    writer.writerow([])
+
+    writer.writerow(["=== CATEGORY SCORES ==="])
+    writer.writerow(["Category", "Score"])
+    for cat, score in (report.get("category_scores") or {}).items():
+        writer.writerow([cat, score])
+    writer.writerow([])
+
+    writer.writerow(["=== MAJOR FINDINGS ==="])
+    writer.writerow(["Code", "Category", "Severity", "Description", "Confidence", "Risk Weight", "Evidence IDs"])
+    for finding in (report.get("major_findings") or []):
+        ev_ids = ", ".join(finding.get("evidence_ids") or [])
+        writer.writerow([
+            finding.get("code"),
+            finding.get("category"),
+            finding.get("severity"),
+            finding.get("description"),
+            finding.get("confidence"),
+            finding.get("risk_weight"),
+            ev_ids,
+        ])
+    writer.writerow([])
+
+    writer.writerow(["=== EVIDENCE SUMMARY ==="])
+    writer.writerow(["Evidence ID", "Task ID", "Field Name", "Source Name", "Source URL", "Retrieved At", "Confidence"])
+    for ev in (report.get("evidence_summary") or []):
+        writer.writerow([
+            ev.get("evidence_id"),
+            ev.get("task_id"),
+            ev.get("field_name"),
+            ev.get("source_name"),
+            ev.get("source_url"),
+            ev.get("retrieved_at"),
+            ev.get("confidence"),
+        ])
+
+    return output.getvalue()
+
+
+@router.get("/{investigation_id}/export")
+def export_investigation_report(
+    format: str = "json",
+    investigation: Investigation = Depends(get_owned_investigation),
+    db: Session = Depends(get_db),
+):
+    from app.api.investigations import get_investigation_report as fetch_report
+
+    report = fetch_report(investigation=investigation, db=db)
+    fmt = format.lower().strip()
+
+    if fmt == "csv":
+        csv_content = _build_report_csv(report)
+        return Response(
+            content=csv_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="report_{investigation.id}.csv"'},
+        )
+    else:
+        json_content = json.dumps(report, indent=2)
+        return Response(
+            content=json_content,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="report_{investigation.id}.json"'},
+        )
+
+
+@router.get("/{investigation_id}/export/json")
+def export_investigation_report_json(
+    investigation: Investigation = Depends(get_owned_investigation),
+    db: Session = Depends(get_db),
+):
+    return export_investigation_report(format="json", investigation=investigation, db=db)
+
+
+@router.get("/{investigation_id}/export/csv")
+def export_investigation_report_csv(
+    investigation: Investigation = Depends(get_owned_investigation),
+    db: Session = Depends(get_db),
+):
+    return export_investigation_report(format="csv", investigation=investigation, db=db)

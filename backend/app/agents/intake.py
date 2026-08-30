@@ -24,6 +24,7 @@ class IntakeAgent:
             "business_name": self._normalize_name(data.get("business_name")),
             "gstin": self._normalize_gstin(data.get("gstin")),
             "cin": self._normalize_cin(data.get("cin")),
+            "epfo_code": self._normalize_text(data.get("epfo_code")),
             "website": self._normalize_website(data.get("website")),
             "location": self._normalize_text(data.get("location")),
             "people": data.get("people", []),
