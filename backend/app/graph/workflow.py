@@ -26,9 +26,13 @@ def should_continue_after_qa(state: InvestigationState) -> str:
         issue_types = {issue.get("type") for issue in issues if isinstance(issue, dict)}
         
         # Route according to failure type
-        if issue_types and issue_types.issubset({"WRONG_RISK_SCORE", "REPORT_WORDING"}):
-            if "WRONG_RISK_SCORE" in issue_types:
-                return "risk_analysis"
+        if "WRONG_ENTITY" in issue_types:
+            return "entity_resolution"
+        if "MISSING_EVIDENCE" in issue_types or "UNSUPPORTED_CLAIM" in issue_types:
+            return "planner"
+        if "WRONG_RISK_SCORE" in issue_types:
+            return "risk_analysis"
+        if "REPORT_WORDING" in issue_types:
             return "report_generation"
         return "planner"
     return "__end__"
@@ -78,6 +82,7 @@ workflow.add_conditional_edges(
     should_continue_after_qa,
     {
         "planner": "planner",
+        "entity_resolution": "entity_resolution",
         "risk_analysis": "risk_analysis",
         "report_generation": "report_generation",
         "__end__": END,
