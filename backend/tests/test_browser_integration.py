@@ -118,3 +118,9 @@ def test_browser_source_registry_resolution():
     assert results[0].source_name == "Custom Registry GST"
     assert results[0].confidence == 0.99
     db_session.close()
+
+def test_real_browser_fetcher_returns_html():
+    from app.agents.browser import BrowserResearchAgent
+    agent=BrowserResearchAgent()
+    html=agent.fetcher("https://example.com")
+    assert "<html" in html.lower()

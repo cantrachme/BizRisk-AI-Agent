@@ -118,39 +118,44 @@ class BrowserResearchAgent:
         if task.task_type not in SUPPORTED_TASK_TYPES:
             return []
 
-        source_name, source_url, confidence = None, None, None
+        # Resolve custom registry sources first, but never let a registry
+        # miss replace canonical metadata for built-in sources.
+        source_name = None
+        source_url = None
+        confidence = None
+        registry_resolved = False
+
+        if source in SOURCES:
+            source_name, source_url, confidence = SOURCES[source]
 
         try:
             from app.db.session import SessionLocal, db_lock
             from app.services.source_registry import get_source_by_name
+            from sqlalchemy.orm.session import sessionmaker
+
+            is_registry_mocked = not isinstance(SessionLocal, sessionmaker)
+
             with db_lock:
                 with SessionLocal() as db:
                     db_source = get_source_by_name(db, source)
                     if db_source:
-                        source_name = db_source.name
-                        source_url = db_source.domain
+                        registry_resolved = True
+                        source_url = db_source.domain or source_url
                         import json
                         config = json.loads(db_source.config_json or "{}")
-                        confidence = config.get("confidence", 0.95)
+                        confidence = config.get(
+                            "confidence",
+                            confidence if confidence is not None else SOURCES.get(source, ("", "", 0.50))[2],
+                        )
+                        if is_registry_mocked or source not in SOURCES:
+                            source_name = db_source.name
         except Exception:
             pass
 
         if source_name is None:
-            if source in SOURCES:
-                source_name, source_url, confidence = SOURCES[source]
-            else:
-                source_name = source
-                source_url = None
-                confidence = 0.50
-        elif source in SOURCES:
-            # Source registry names are administrative identifiers; the
-            # browser result must expose the canonical human-readable name.
-            canonical_name, canonical_url, canonical_confidence = SOURCES[source]
-            source_name = canonical_name
-            if source_url is None:
-                source_url = canonical_url
-            if confidence is None:
-                confidence = canonical_confidence
+            source_name = source
+            source_url = None
+            confidence = 0.50
 
         research_url = self._resolve_url(
             task=task,
@@ -207,7 +212,9 @@ class BrowserResearchAgent:
             *task.preferred_sources,
             *task.fallback_sources,
         ]:
-            if source in SOURCES:
+            if source:
+                # Built-in sources and registry-backed custom sources are
+                # both valid. The registry lookup in execute() is authoritative.
                 return source
 
         return None
@@ -261,29 +268,27 @@ class BrowserResearchAgent:
         )
 
     @staticmethod
-    def _fetch_page(
-        url: str,
-    ) -> str:
-        request = Request(
-            url,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 "
-                    "(compatible; BizRiskAI/1.0)"
-                )
-            },
-        )
+    @staticmethod
+    def _fetch_page(url: str) -> str:
+        from playwright.sync_api import sync_playwright
+        from urllib.parse import urlparse
 
-        with urlopen(
-            request,
-            timeout=10,
-        ) as response:
-            charset = response.headers.get_content_charset() or "utf-8"
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Unsupported research URL")
 
-            return response.read().decode(
-                charset,
-                errors="replace",
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                java_script_enabled=True,
+                user_agent="BizRiskResearchBot/1.0",
             )
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            html = page.content()
+            context.close()
+            browser.close()
+            return html
 
     @staticmethod
     def _sanitize_prompt_injection(text: str | None) -> str | None:

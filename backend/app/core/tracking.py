@@ -29,7 +29,10 @@ def check_limits(state: InvestigationState, extra_tasks: int = 0, extra_actions:
     from app.core.config import get_settings
     settings = get_settings()
 
-    if state.get("stop_reason"):
+    if state.get("status") == "WAITING_FOR_USER":
+        return None
+
+    if state.get("stop_reason") and state.get("status") in {"LIMIT_REACHED", "MAX_LOOPS_REACHED"}:
         return state["stop_reason"]
 
     # Enforce maximum search/research depth (loop count)
