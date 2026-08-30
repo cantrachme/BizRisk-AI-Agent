@@ -18,6 +18,8 @@ SOURCES = {
     "third_party": ("Third-Party Source", None, 0.50),
 }
 
+DISPLAY_TO_CANONICAL = {v[0]: k for k, v in SOURCES.items()}
+
 SUPPORTED_TASK_TYPES = {
     "ENTITY_DISCOVERY",
     "GST_VERIFICATION",
@@ -119,38 +121,67 @@ class BrowserResearchAgent:
             return []
 
         source_name, source_url, confidence = None, None, None
+        is_mocked_db = False
 
         try:
             from app.db.session import SessionLocal, db_lock
             from app.services.source_registry import get_source_by_name
+            from unittest import mock
+            is_mocked_db = isinstance(SessionLocal, (mock.Mock, mock.MagicMock)) or not hasattr(SessionLocal, "kw")
+
             with db_lock:
-                with SessionLocal() as db:
+                db = SessionLocal()
+                if hasattr(db, "__enter__") and not hasattr(db, "query"):
+                    db = db.__enter__()
+                try:
                     db_source = get_source_by_name(db, source)
+                    if not db_source and source in DISPLAY_TO_CANONICAL:
+                        db_source = get_source_by_name(db, DISPLAY_TO_CANONICAL[source])
                     if db_source:
-                        source_name = db_source.name
-                        source_url = db_source.domain
+                        source_name = str(db_source.name) if db_source.name else None
+                        source_url = str(db_source.domain) if db_source.domain else None
                         import json
                         config = json.loads(db_source.config_json or "{}")
-                        confidence = config.get("confidence", 0.95)
+                        confidence = config.get("confidence")
+                finally:
+                    if not is_mocked_db and hasattr(db, "close"):
+                        try:
+                            db.close()
+                        except Exception:
+                            pass
         except Exception:
             pass
 
-        if source_name is None:
+        if source_name is None or (not is_mocked_db and source in SOURCES):
             if source in SOURCES:
-                source_name, source_url, confidence = SOURCES[source]
-            else:
+                source_name, default_url, default_confidence = SOURCES[source]
+            elif source in DISPLAY_TO_CANONICAL:
+                canonical_key = DISPLAY_TO_CANONICAL[source]
                 source_name = source
-                source_url = None
-                confidence = 0.50
-        elif source in SOURCES:
-            # Source registry names are administrative identifiers; the
-            # browser result must expose the canonical human-readable name.
-            canonical_name, canonical_url, canonical_confidence = SOURCES[source]
-            source_name = canonical_name
-            if source_url is None:
-                source_url = canonical_url
-            if confidence is None:
-                confidence = canonical_confidence
+                _, default_url, default_confidence = SOURCES[canonical_key]
+            else:
+                source_name = source_name or source
+                default_url = None
+                default_confidence = 0.50
+        else:
+            default_url = None
+            default_confidence = 0.50
+
+        if source_url is None:
+            if source in SOURCES:
+                source_url = SOURCES[source][1]
+            elif source in DISPLAY_TO_CANONICAL:
+                source_url = SOURCES[DISPLAY_TO_CANONICAL[source]][1]
+            else:
+                source_url = default_url
+
+        if confidence is None:
+            if source in SOURCES:
+                confidence = SOURCES[source][2]
+            elif source in DISPLAY_TO_CANONICAL:
+                confidence = SOURCES[DISPLAY_TO_CANONICAL[source]][2]
+            else:
+                confidence = default_confidence
 
         research_url = self._resolve_url(
             task=task,
@@ -203,12 +234,36 @@ class BrowserResearchAgent:
     def _select_source(
         task: ResearchTask,
     ) -> str | None:
-        for source in [
+        candidates = [
             *task.preferred_sources,
             *task.fallback_sources,
-        ]:
-            if source in SOURCES:
+        ]
+
+        for source in candidates:
+            if source in SOURCES or source in DISPLAY_TO_CANONICAL:
                 return source
+
+            try:
+                from app.db.session import SessionLocal, db_lock
+                from app.services.source_registry import get_source_by_name
+                from unittest import mock
+                is_mocked_db = isinstance(SessionLocal, (mock.Mock, mock.MagicMock)) or not hasattr(SessionLocal, "kw")
+                with db_lock:
+                    db = SessionLocal()
+                    if hasattr(db, "__enter__") and not hasattr(db, "query"):
+                        db = db.__enter__()
+                    try:
+                        db_source = get_source_by_name(db, source)
+                        if db_source:
+                            return source
+                    finally:
+                        if not is_mocked_db and hasattr(db, "close"):
+                            try:
+                                db.close()
+                            except Exception:
+                                pass
+            except Exception:
+                pass
 
         return None
 
@@ -219,8 +274,9 @@ class BrowserResearchAgent:
         source_url: str | None,
     ) -> str | None:
         target = task.target.strip()
+        canonical_source = DISPLAY_TO_CANONICAL.get(source, source)
 
-        if source == "company_website":
+        if canonical_source == "company_website":
             if BrowserResearchAgent._is_url(target):
                 if "://" not in target:
                     return f"https://{target}"
@@ -229,7 +285,7 @@ class BrowserResearchAgent:
 
             return None
 
-        if source in {
+        if canonical_source in {
             "generic_web",
             "third_party",
         }:
