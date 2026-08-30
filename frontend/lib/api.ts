@@ -85,6 +85,7 @@ export const api = {
     cin?: string;
     website?: string;
     location?: string;
+    additional_information?: string;
   }) => request<{ id: string; status: string }>('/investigations/', {
     method: 'POST',
     body: JSON.stringify(payload),

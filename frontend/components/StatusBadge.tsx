@@ -5,7 +5,7 @@ interface StatusBadgeProps {
 }
 
 export default function StatusBadge({ status }: StatusBadgeProps) {
-  const norm = status.toUpperCase();
+  const norm = (status || 'UNKNOWN').toUpperCase();
 
   const getStyle = (): React.CSSProperties => {
     switch (norm) {
