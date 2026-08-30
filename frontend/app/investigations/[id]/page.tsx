@@ -283,6 +283,28 @@ export default function InvestigationPage() {
 
       {error && <div style={errorStyle}>{error}</div>}
 
+      {/* FAILED INVESTIGATION PANEL */}
+      {detail.status === 'FAILED' && (
+        <div className="glass-panel" style={{
+          padding: '20px',
+          border: '1px solid rgba(239, 68, 68, 0.3)',
+          borderRadius: '12px',
+          background: 'rgba(239, 68, 68, 0.02)',
+          display: 'flex',
+          gap: '16px',
+          alignItems: 'center',
+          boxShadow: '0 0 16px rgba(239, 68, 68, 0.05)',
+        }}>
+          <span style={{ fontSize: '24px' }}>❌</span>
+          <div>
+            <h3 style={{ margin: 0, fontWeight: '700', color: '#f87171' }}>Investigation Case Failed</h3>
+            <p style={{ margin: '4px 0 0 0', fontSize: '14px', color: 'var(--foreground-muted)' }}>
+              The generic web research or QA validation thresholds failed to resolve enough verified entity markers. This case is terminated.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div style={twoColumnLayoutGridStyle}>
         {/* Left Hand: Investigation Specs & Evidence */}
         <div style={leftColStyle}>
@@ -354,26 +376,91 @@ export default function InvestigationPage() {
               <div style={panelEmptyStyle}>No evidence persisted. Awaiting node tasks...</div>
             ) : (
               <div style={evidenceListStyle}>
-                {evidence.map((ev) => (
-                  <div key={ev.id} style={evidenceCardStyle}>
-                    <div style={evidenceCardHeaderStyle}>
-                      <span style={evidenceFieldStyle}>{ev.field_name.replace('_', ' ')}</span>
-                      {isOfficialSource(ev.source_name) ? (
-                        <span style={officialSourceTagStyle}>Official Registry</span>
-                      ) : (
-                        <span style={thirdPartySourceTagStyle}>Third-Party</span>
-                      )}
+                {evidence.filter(ev => ev.field_name !== 'candidate_entities').map((ev) => {
+                  const isBlocked = ev.confidence === 0.0 || 
+                                    ev.field_value === 'UNAVAILABLE' || 
+                                    ev.field_value === '' || 
+                                    ev.field_value === '{"title": null, "text": ""}';
+                  
+                  const isLowConfidence = !isBlocked && ev.confidence > 0.0 && ev.confidence < 0.50;
+                  
+                  let statusTagText = '✓ VERIFIED EVIDENCE';
+                  let cardBorderColor = 'rgba(52, 211, 153, 0.2)';
+                  let cardBgColor = 'rgba(52, 211, 153, 0.01)';
+                  let statusTagColor = '#34d399';
+
+                  if (isBlocked) {
+                    statusTagText = '⚠ UNAVAILABLE SOURCE';
+                    cardBorderColor = 'rgba(239, 68, 68, 0.2)';
+                    cardBgColor = 'rgba(239, 68, 68, 0.01)';
+                    statusTagColor = '#f87171';
+                  } else if (isLowConfidence) {
+                    statusTagText = '⚠ LOW CONFIDENCE';
+                    cardBorderColor = 'rgba(245, 158, 11, 0.2)';
+                    cardBgColor = 'rgba(245, 158, 11, 0.01)';
+                    statusTagColor = '#f59e0b';
+                  }
+
+                  // Human-readable formatting of the field value
+                  let displayValue = ev.field_value;
+                  if (isBlocked) {
+                    displayValue = 'This information was unavailable from the source (blocked, empty, or connection failed).';
+                  } else if (displayValue && (displayValue.startsWith('{') || displayValue.startsWith('['))) {
+                    try {
+                      const parsed = JSON.parse(displayValue);
+                      if (typeof parsed === 'object') {
+                        displayValue = Object.entries(parsed)
+                          .map(([k, v]) => `${k.replace('_', ' ')}: ${v}`)
+                          .join('\n');
+                      }
+                    } catch {
+                      // fallback to raw value
+                    }
+                  }
+
+                  return (
+                    <div key={ev.id} style={{
+                      ...evidenceCardStyle,
+                      border: `1px solid ${cardBorderColor}`,
+                      background: cardBgColor,
+                    }}>
+                      <div style={evidenceCardHeaderStyle}>
+                        <span style={evidenceFieldStyle}>{ev.field_name.replace('_', ' ')}</span>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          {isOfficialSource(ev.source_name) ? (
+                            <span style={officialSourceTagStyle}>Official Registry</span>
+                          ) : (
+                            <span style={thirdPartySourceTagStyle}>Third-Party</span>
+                          )}
+                          <span style={{
+                            fontSize: '11px',
+                            padding: '2px 8px',
+                            borderRadius: '8px',
+                            background: cardBorderColor.replace('0.2', '0.1'),
+                            color: statusTagColor,
+                            border: `1px dashed ${cardBorderColor}`,
+                            fontWeight: '600',
+                          }}>{statusTagText}</span>
+                        </div>
+                      </div>
+                      <div style={{
+                        fontSize: '14px',
+                        color: isBlocked ? 'var(--foreground-muted)' : '#fff',
+                        fontStyle: isBlocked ? 'italic' : 'normal',
+                        whiteSpace: 'pre-wrap',
+                        fontFamily: isBlocked ? 'inherit' : 'monospace',
+                        lineHeight: '1.4',
+                      }}>{displayValue}</div>
+                      <div style={evidenceMetaGridStyle}>
+                        <span>Source: <strong>{ev.source_name}</strong></span>
+                        <span>Confidence: <strong>{(ev.confidence * 100).toFixed(0)}%</strong></span>
+                        {ev.retrieved_timestamp && (
+                          <span>Fetched: <strong>{new Date(ev.retrieved_timestamp).toLocaleString()}</strong></span>
+                        )}
+                      </div>
                     </div>
-                    <div style={evidenceValueStyle}>{ev.field_value}</div>
-                    <div style={evidenceMetaGridStyle}>
-                      <span>Source: <strong>{ev.source_name}</strong></span>
-                      <span>Confidence: <strong>{(ev.confidence * 100).toFixed(0)}%</strong></span>
-                      {ev.retrieved_timestamp && (
-                        <span>Fetched: <strong>{new Date(ev.retrieved_timestamp).toLocaleString()}</strong></span>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
