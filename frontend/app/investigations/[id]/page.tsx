@@ -83,8 +83,8 @@ export default function InvestigationPage() {
       }
 
       // Check if polling is required
-      const activeStates = ['CREATED', 'PENDING', 'PENDING_RESEARCH', 'RUNNING', 'DISCOVERY', 'RESEARCH', 'WAITING_FOR_USER'];
-      const shouldPoll = activeStates.includes(detailData.status.toUpperCase());
+      const terminalStates = ['COMPLETED', 'FAILED'];
+      const shouldPoll = !terminalStates.includes(detailData.status.toUpperCase());
       setPolling(shouldPoll);
 
     } catch (err) {
