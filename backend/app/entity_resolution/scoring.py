@@ -18,6 +18,13 @@ def score_entities(
     normalized_target = normalize_entity(target)
     normalized_candidate = normalize_entity(candidate)
 
+    # Strict check: if unique identifiers mismatch, confidence is 0.0
+    for identifier in ["gstin", "cin"]:
+        t_val = normalized_target.get(identifier)
+        c_val = normalized_candidate.get(identifier)
+        if t_val and c_val and t_val != c_val:
+            return 0.0
+
     score = 0.0
     available_weight = 0.0
 

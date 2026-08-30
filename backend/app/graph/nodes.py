@@ -50,41 +50,71 @@ def update_investigation_in_db(
     with db_lock:
         with SessionLocal() as db:
             inv = db.get(Investigation, investigation_id)
-        if inv:
-            inv.current_node = current_node
-            inv.current_graph_node = current_node
-            if status:
-                inv.status = status
-            if retry_count is not None:
-                inv.retry_count = retry_count
-            if risk_score is not None:
-                inv.risk_score = risk_score
-            if risk_level:
-                inv.risk_level = risk_level
-            if resolved_entity_id is not None:
-                inv.resolved_entity_id = resolved_entity_id
-            if entity_confidence is not None:
-                inv.entity_confidence = entity_confidence
-            if completed:
-                inv.completed_timestamp = datetime.now(timezone.utc)
+            if inv:
+                inv.current_node = current_node
+                inv.current_graph_node = current_node
+                if status:
+                    inv.status = status
+                if retry_count is not None:
+                    inv.retry_count = retry_count
+                if risk_score is not None:
+                    inv.risk_score = risk_score
+                if risk_level:
+                    inv.risk_level = risk_level
+                if resolved_entity_id is not None:
+                    inv.resolved_entity_id = resolved_entity_id
+                if entity_confidence is not None:
+                    inv.entity_confidence = entity_confidence
+                if completed:
+                    inv.completed_timestamp = datetime.now(timezone.utc)
 
-            if state:
-                user_id = state.get("user_id") or (state.get("raw_input") or {}).get("user_id")
-                if user_id:
-                    inv.user_id = str(user_id)
-                if "raw_input" in state:
-                    inv.raw_input = json.dumps(state["raw_input"])
-                if "normalized_input" in state:
-                    inv.normalized_input = json.dumps(state["normalized_input"])
-                if state.get("resolved_entity"):
-                    entity = state["resolved_entity"]
-                    name_val = entity.get("business_name") or entity.get("name")
-                    if name_val and not inv.resolved_entity_id:
-                        inv.resolved_entity_id = uuid.uuid5(uuid.NAMESPACE_DNS, str(name_val))
-                    inv.entity_confidence = state.get("entity_confidence", 0.0)
-                inv.persistent_graph_state = serialize_state(state)
+                if state:
+                    user_id = state.get("user_id") or (state.get("raw_input") or {}).get("user_id")
+                    if user_id:
+                        inv.user_id = str(user_id)
+                    if "raw_input" in state:
+                        inv.raw_input = json.dumps(state["raw_input"])
+                    if "normalized_input" in state:
+                        inv.normalized_input = json.dumps(state["normalized_input"])
+                    if state.get("resolved_entity"):
+                        entity = state["resolved_entity"]
+                        name_val = entity.get("business_name") or entity.get("name")
+                        if name_val and not inv.resolved_entity_id:
+                            inv.resolved_entity_id = uuid.uuid5(uuid.NAMESPACE_DNS, str(name_val))
+                        inv.entity_confidence = state.get("entity_confidence", 0.0)
+                    inv.persistent_graph_state = serialize_state(state)
 
-            db.commit()
+                # Final safety check: ensure the resolved entity is persisted to the entities table
+                if inv.resolved_entity_id:
+                    from app.models.entity import Entity as EntityModel
+                    existing_entity = db.get(EntityModel, inv.resolved_entity_id)
+                    if not existing_entity:
+                        ent_details = {}
+                        if state and state.get("resolved_entity"):
+                            ent_details = state["resolved_entity"]
+                        elif inv.persistent_graph_state:
+                            try:
+                                parsed_state = json.loads(inv.persistent_graph_state)
+                                ent_details = parsed_state.get("resolved_entity") or {}
+                            except Exception:
+                                pass
+                        
+                        name_val = ent_details.get("business_name") or ent_details.get("name") or "Resolved Entity"
+                        new_ent = EntityModel(
+                            id=inv.resolved_entity_id,
+                            canonical_name=str(name_val),
+                            trade_name=ent_details.get("trade_name") or ent_details.get("name"),
+                            gstin=ent_details.get("gstin"),
+                            cin=ent_details.get("cin"),
+                            epfo_code=ent_details.get("epfo_code"),
+                            website=ent_details.get("website"),
+                            registered_address=ent_details.get("registered_address") or ent_details.get("address"),
+                            state=ent_details.get("state") or ent_details.get("location"),
+                            business_activity=ent_details.get("business_activity"),
+                        )
+                        db.merge(new_ent)
+
+                db.commit()
 
 
 def log_node_event(
