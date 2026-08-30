@@ -384,76 +384,83 @@ export default function InvestigationPage() {
         <div style={rightColStyle}>
           
           {/* Risk Card */}
-          {detail.risk_score !== null && (
-            <div className="glass-panel" style={{
-              ...riskPanelStyle,
-              borderColor: getRiskColor(detail.risk_level),
-              boxShadow: `0 0 16px ${getRiskGlow(detail.risk_level)}`
-            }}>
-              <h3 style={panelHeaderStyle}>Risk Assessment Output</h3>
-              <div style={riskScoreContainerStyle}>
-                <div style={scoreCircleStyle}>
-                  <span style={{ fontSize: '42px', fontWeight: '900', color: getRiskColor(detail.risk_level) }}>
-                    {detail.risk_score}
-                  </span>
-                  <span style={{ fontSize: '12px', color: 'var(--foreground-muted)', fontWeight: '600' }}>SCORE / 100</span>
-                </div>
-                <div style={riskLevelInfoStyle}>
-                  <span style={{ fontSize: '13px', color: 'var(--foreground-muted)' }}>Risk Classification</span>
-                  <h4 style={{ fontSize: '24px', fontWeight: '800', color: getRiskColor(detail.risk_level) }}>
-                    {detail.risk_level}
-                  </h4>
-                </div>
-              </div>
+          {((detail.risk_score !== null && detail.risk_score !== undefined) || risk !== null) && (() => {
+            const displayScore = detail.risk_score !== null && detail.risk_score !== undefined 
+              ? detail.risk_score 
+              : risk?.overall_risk?.score ?? null;
+            const displayLevel = detail.risk_level || risk?.overall_risk?.level || null;
 
-              {risk && (
-                <div style={categoryBreakdownStyle}>
-                  <h4 style={subHeaderStyle}>Category Score Breakdown</h4>
-                  <div style={categoryGridStyle}>
-                    {Object.entries(risk.category_scores).map(([category, score]) => (
-                      <div key={category} style={categoryBarItemStyle}>
-                        <div style={categoryMetaStyle}>
-                          <span style={categoryNameLabelStyle}>{category}</span>
-                          <span>{score}</span>
-                        </div>
-                        <div style={categoryBarBgStyle}>
-                          <div style={{
-                            ...categoryBarFillStyle,
-                            width: `${Math.min(score, 100)}%`,
-                            background: getRiskColor(detail.risk_level)
-                          }} />
-                        </div>
-                      </div>
-                    ))}
+            return (
+              <div className="glass-panel" style={{
+                ...riskPanelStyle,
+                borderColor: getRiskColor(displayLevel),
+                boxShadow: `0 0 16px ${getRiskGlow(displayLevel)}`
+              }}>
+                <h3 style={panelHeaderStyle}>Risk Assessment Output</h3>
+                <div style={riskScoreContainerStyle}>
+                  <div style={scoreCircleStyle}>
+                    <span style={{ fontSize: '42px', fontWeight: '900', color: getRiskColor(displayLevel) }}>
+                      {displayScore !== null ? displayScore : 'N/A'}
+                    </span>
+                    <span style={{ fontSize: '12px', color: 'var(--foreground-muted)', fontWeight: '600' }}>SCORE / 100</span>
                   </div>
-
-                  {risk.risk_signals.length > 0 && (
-                    <div style={signalsListContainerStyle}>
-                      <h4 style={subHeaderStyle}>Triggered Risk Signals ({risk.risk_signals.length})</h4>
-                      <div style={signalsListStyle}>
-                        {risk.risk_signals.map((sig, idx) => (
-                          <div key={idx} style={signalCardStyle}>
-                            <div style={signalCardHeaderStyle}>
-                              <strong>{sig.code}</strong>
-                              <span style={{
-                                fontSize: '11px',
-                                padding: '2px 8px',
-                                borderRadius: '8px',
-                                background: 'rgba(239, 68, 68, 0.1)',
-                                color: '#f87171',
-                                border: '1px solid rgba(239, 68, 68, 0.2)'
-                              }}>{sig.severity}</span>
-                            </div>
-                            <p style={signalDescStyle}>{sig.description}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  <div style={riskLevelInfoStyle}>
+                    <span style={{ fontSize: '13px', color: 'var(--foreground-muted)' }}>Risk Classification</span>
+                    <h4 style={{ fontSize: '24px', fontWeight: '800', color: getRiskColor(displayLevel) }}>
+                      {displayLevel || 'UNKNOWN'}
+                    </h4>
+                  </div>
                 </div>
-              )}
-            </div>
-          )}
+
+                {risk && (
+                  <div style={categoryBreakdownStyle}>
+                    <h4 style={subHeaderStyle}>Category Score Breakdown</h4>
+                    <div style={categoryGridStyle}>
+                      {Object.entries(risk.category_scores || {}).map(([category, score]) => (
+                        <div key={category} style={categoryBarItemStyle}>
+                          <div style={categoryMetaStyle}>
+                            <span style={categoryNameLabelStyle}>{category}</span>
+                            <span>{score}</span>
+                          </div>
+                          <div style={categoryBarBgStyle}>
+                            <div style={{
+                              ...categoryBarFillStyle,
+                              width: `${Math.min(score, 100)}%`,
+                              background: getRiskColor(displayLevel)
+                            }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {(risk.risk_signals || []).length > 0 && (
+                      <div style={signalsListContainerStyle}>
+                        <h4 style={subHeaderStyle}>Triggered Risk Signals ({(risk.risk_signals || []).length})</h4>
+                        <div style={signalsListStyle}>
+                          {(risk.risk_signals || []).map((sig, idx) => (
+                            <div key={idx} style={signalCardStyle}>
+                              <div style={signalCardHeaderStyle}>
+                                <strong>{sig.code}</strong>
+                                <span style={{
+                                  fontSize: '11px',
+                                  padding: '2px 8px',
+                                  borderRadius: '8px',
+                                  background: 'rgba(239, 68, 68, 0.1)',
+                                  color: '#f87171',
+                                  border: '1px solid rgba(239, 68, 68, 0.2)'
+                                }}>{sig.severity}</span>
+                              </div>
+                              <p style={signalDescStyle}>{sig.description}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Report Viewer */}
           <div className="glass-panel" style={innerPanelStyle}>
@@ -490,7 +497,11 @@ export default function InvestigationPage() {
                   <div>QA Status: 
                     <span style={{ 
                       marginLeft: '6px',
-                      color: reports[selectedReportIdx].qa_status === 'PASS' ? '#34d399' : '#f87171',
+                      color: reports[selectedReportIdx].qa_status === 'PASS' 
+                        ? '#34d399' 
+                        : reports[selectedReportIdx].qa_status === 'FAIL' 
+                        ? '#f87171' 
+                        : '#f59e0b',
                       fontWeight: '700'
                     }}>
                       {reports[selectedReportIdx].qa_status}
