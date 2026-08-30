@@ -239,3 +239,138 @@ def test_graph_node_integration(db_session, investigation_id):
     db_signals = db_session.query(RiskSignal).filter(RiskSignal.investigation_id == investigation_id).all()
     assert len(db_signals) == 1
     assert db_signals[0].code == "GST_INACTIVE"
+
+
+def test_risk_scoring_evidence_dependent():
+    from app.risk.engine import calculate_risk_analysis
+    from app.graph.state import ResearchResult
+
+    # Set A: Healthy, matching company details
+    evidence_set_a = [
+        ResearchResult(
+            result_id="R1",
+            task_id="T1",
+            field_name="legal_name",
+            field_value="Tech Mahindra Limited",
+            source_name="Company Website",
+            retrieved_at="2026-08-26T10:00:00+00:00",
+            confidence=0.85,
+        ),
+        ResearchResult(
+            result_id="R2",
+            task_id="T2",
+            field_name="legal_name",
+            field_value="Tech Mahindra Ltd",
+            source_name="GST Portal",
+            retrieved_at="2026-08-26T10:00:00+00:00",
+            confidence=0.95,
+        ),
+        ResearchResult(
+            result_id="R3",
+            task_id="T3",
+            field_name="registered_address",
+            field_value="Plot No. 1, Phase 3, Rajiv Gandhi Infotech Park, Hinjewadi, Pune",
+            source_name="Company Website",
+            retrieved_at="2026-08-26T10:00:00+00:00",
+            confidence=0.85,
+        ),
+        ResearchResult(
+            result_id="R4",
+            task_id="T4",
+            field_name="registered_address",
+            field_value="Plot No 1, Phase 3, Rajiv Gandhi Infotech Park, Hinjewadi, Pune",
+            source_name="GST Portal",
+            retrieved_at="2026-08-26T10:00:00+00:00",
+            confidence=0.95,
+        ),
+    ]
+
+    analysis_a = calculate_risk_analysis(evidence_set_a)
+    # Healthy company with no mismatches or issues should have score 0
+    assert analysis_a["overall_risk"]["score"] == 0
+    assert analysis_a["overall_risk"]["level"] == "LOW"
+
+    # Set B: Suspicious, mismatching and inactive details
+    evidence_set_b = [
+        ResearchResult(
+            result_id="R1",
+            task_id="T1",
+            field_name="legal_name",
+            field_value="Tech Mahindra Limited",
+            source_name="Company Website",
+            retrieved_at="2026-08-26T10:00:00+00:00",
+            confidence=0.85,
+        ),
+        ResearchResult(
+            result_id="R2",
+            task_id="T2",
+            field_name="legal_name",
+            field_value="Completely Different Company Name Ltd",
+            source_name="GST Portal",
+            retrieved_at="2026-08-26T10:00:00+00:00",
+            confidence=0.95,
+        ),
+        ResearchResult(
+            result_id="R3",
+            task_id="T3",
+            field_name="registered_address",
+            field_value="Plot No. 1, Phase 3, Rajiv Gandhi Infotech Park, Hinjewadi, Pune",
+            source_name="Company Website",
+            retrieved_at="2026-08-26T10:00:00+00:00",
+            confidence=0.85,
+        ),
+        ResearchResult(
+            result_id="R4",
+            task_id="T4",
+            field_name="registered_address",
+            field_value="123 Fake Street, Mismatch City, Delhi",
+            source_name="GST Portal",
+            retrieved_at="2026-08-26T10:00:00+00:00",
+            confidence=0.95,
+        ),
+        ResearchResult(
+            result_id="R5",
+            task_id="T5",
+            field_name="gst_status",
+            field_value="Inactive",
+            source_name="GST Portal",
+            retrieved_at="2026-08-26T10:00:00+00:00",
+            confidence=0.95,
+        )
+    ]
+
+    analysis_b = calculate_risk_analysis(evidence_set_b)
+    # The mismatched names, mismatched addresses, and inactive GST should trigger
+    # LEGAL_NAME_CONFLICT (25), ADDRESS_MAJOR_MISMATCH (10), GST_INACTIVE (30).
+    # Sum: 25 + 10 + 30 = 65 overall risk score.
+    assert analysis_b["overall_risk"]["score"] == 65
+    assert analysis_b["overall_risk"]["level"] == "HIGH"
+    assert len(analysis_b["risk_signals"]) == 3
+    assert set(sig["code"] for sig in analysis_b["risk_signals"]) == {"LEGAL_NAME_CONFLICT", "ADDRESS_MAJOR_MISMATCH", "GST_INACTIVE"}
+
+
+def test_insufficient_evidence_prevention():
+    from app.risk.engine import calculate_risk_analysis, InsufficientEvidenceError
+    
+    # Temporarily patch load_config to enable minimum_evidence_policy
+    mock_config = {
+        "rules": {},
+        "risk_levels": {
+            "low": {"min": 0, "max": 30}
+        },
+        "minimum_evidence_policy": {
+            "enabled": True,
+            "min_legal_identity_sources": 1,
+            "min_supporting_sources": 1,
+            "legal_identity_sources": ["GST Portal"],
+            "supporting_sources": ["Company Website"]
+        }
+    }
+    
+    with patch("app.risk.engine.load_config", return_value=mock_config):
+        # Empty evidence must raise InsufficientEvidenceError
+        with pytest.raises(InsufficientEvidenceError) as exc_info:
+            calculate_risk_analysis([])
+        assert "Minimum evidence requirement not met" in str(exc_info.value)
+
+

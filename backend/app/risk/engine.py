@@ -29,6 +29,19 @@ def calculate_risk_analysis(
     """
     Computes overall risk score, risk level, category scores, and active risk signals.
     """
+    print(f"\n[DIAGNOSTIC] === Risk Engine Evaluation Started ===", flush=True)
+    if investigation_id:
+        print(f"[DIAGNOSTIC] Investigation ID: {investigation_id}", flush=True)
+
+    print(f"[DIAGNOSTIC] Number of raw evidence records retrieved: {len(evidences_raw)}", flush=True)
+    for idx, ev in enumerate(evidences_raw, start=1):
+        ev_id = getattr(ev, "research_result_id", None) or getattr(ev, "id", None) or (ev.get("id") if isinstance(ev, dict) else None)
+        field_name = getattr(ev, "field_name", None) or (ev.get("field_name") if isinstance(ev, dict) else None)
+        field_value = getattr(ev, "field_value", None) or (ev.get("field_value") if isinstance(ev, dict) else None)
+        confidence = getattr(ev, "confidence", None) or (ev.get("confidence") if isinstance(ev, dict) else 0.0)
+        source_name = getattr(ev, "source_name", None) or (ev.get("source_name") if isinstance(ev, dict) else None)
+        print(f"[DIAGNOSTIC] Raw Record {idx}: ID={ev_id} | Field={field_name} | Value={field_value} ({type(field_value).__name__}) | Confidence={confidence} | Source={source_name}", flush=True)
+
     config = load_config()
     rules_config = config.get("rules", {})
     levels_config = config.get("risk_levels", {})
@@ -45,7 +58,6 @@ def calculate_risk_analysis(
         supporting_found = set()
 
         for ev in evidences_raw:
-            # Handle both SQLAlchemy objects and ResearchResult/dict objects
             source_name = getattr(ev, "source_name", None)
             if source_name is None and isinstance(ev, dict):
                 source_name = ev.get("source_name")
@@ -65,6 +77,9 @@ def calculate_risk_analysis(
 
     # Normalize incoming raw evidence
     normalized_evs = [normalize_evidence(ev) for ev in evidences_raw]
+    print(f"[DIAGNOSTIC] Number of normalized evidence records: {len(normalized_evs)}", flush=True)
+    for idx, nev in enumerate(normalized_evs, start=1):
+        print(f"[DIAGNOSTIC] Normalized Record {idx}: ID={nev.id} | Field={nev.field_name} | Value={nev.field_value} | Source={nev.source_name} | Confidence={nev.confidence}", flush=True)
 
     # Only validated, traceable evidence may participate in risk scoring.
     # Reject malformed evidence rather than allowing an ungrounded rule to affect score.
@@ -81,8 +96,13 @@ def calculate_risk_analysis(
         seen_ids.add(evidence_id)
         validated_evs.append(ev)
 
+    print(f"[DIAGNOSTIC] Number of validated evidence records passing confidence filter (>= 0.5): {len(validated_evs)}", flush=True)
+    for idx, vev in enumerate(validated_evs, start=1):
+        print(f"[DIAGNOSTIC] Validated Record {idx}: ID={vev.id} | Field={vev.field_name} | Value={vev.field_value} | Source={vev.source_name} | Confidence={vev.confidence}", flush=True)
+
     # Evaluate deterministic rules only against validated evidence.
     triggered_rules = run_all_rules(validated_evs)
+    print(f"[DIAGNOSTIC] Triggered Rules: {list(triggered_rules.keys())}", flush=True)
 
     active_signals = []
     active_weights = []
@@ -121,6 +141,7 @@ def calculate_risk_analysis(
 
     # Overall score calculation: min(sum(active_signal_weights), 100)
     overall_score = min(sum(active_weights), 100)
+    print(f"[DIAGNOSTIC] Score aggregation sum: {sum(active_weights)} | Capped: {overall_score}", flush=True)
 
     # Risk level classification
     risk_level = "UNKNOWN"
@@ -135,6 +156,11 @@ def calculate_risk_analysis(
     category_scores = {}
     for cat, weights in category_weights.items():
         category_scores[cat] = min(sum(weights), 100)
+        print(f"[DIAGNOSTIC] Category '{cat}' weights: {weights} | Score: {category_scores[cat]}", flush=True)
+
+    print(f"[DIAGNOSTIC] Final Risk Score: {overall_score}", flush=True)
+    print(f"[DIAGNOSTIC] Final Risk Level: {risk_level}", flush=True)
+    print(f"[DIAGNOSTIC] === Risk Engine Evaluation Ended ===\n", flush=True)
 
     return {
         "overall_risk": {

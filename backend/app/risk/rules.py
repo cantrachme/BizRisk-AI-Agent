@@ -138,7 +138,7 @@ def evaluate_legal_name_conflict(evidences: List[NormalizedEvidence]) -> Optiona
 
 
 def evaluate_address_major_mismatch(evidences: List[NormalizedEvidence]) -> Optional[Dict[str, Any]]:
-    address_evidences = [ev for ev in evidences if ev.field_name == "address"]
+    address_evidences = [ev for ev in evidences if ev.field_name in ["address", "registered_address", "contact_address"]]
     if len(address_evidences) < 2:
         return None
 
