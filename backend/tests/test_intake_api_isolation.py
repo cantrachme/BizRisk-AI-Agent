@@ -133,3 +133,14 @@ def test_intake_api_isolation(client, db_session):
     
     final_count = db_session.query(Investigation).count()
     assert final_count == initial_count
+
+
+def test_intake_api_not_a_valid_url(client):
+    payload = {
+        "website": "not-a-valid-url"
+    }
+    resp = client.post("/api/v1/test/intake", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["website"] is None
+
