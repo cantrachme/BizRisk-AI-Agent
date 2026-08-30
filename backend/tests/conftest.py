@@ -1,5 +1,19 @@
 import pytest
 import uuid
+from unittest import mock
+from app.api.investigations import run_investigation_workflow as original_run_workflow
+import sys
+if not hasattr(sys, "_original_run_investigation_workflow"):
+    sys._original_run_investigation_workflow = original_run_workflow
+
+from unittest.mock import MagicMock
+mock_background_workflow = MagicMock()
+mock.patch("app.api.investigations.run_investigation_workflow", mock_background_workflow).start()
+
+@pytest.fixture(autouse=True)
+def reset_background_mock():
+    mock_background_workflow.reset_mock()
+
 from fastapi import Request, Depends
 from sqlalchemy.orm import Session
 from app.main import app

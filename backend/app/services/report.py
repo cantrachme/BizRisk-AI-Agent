@@ -57,6 +57,8 @@ def generate_investigation_report(
         candidates = []
         for ev in evidences:
             if ev.field_name == "candidate_entities":
+                if ev.confidence < 0.5:
+                    continue
                 try:
                     val = json.loads(ev.field_value)
                     if isinstance(val, list):

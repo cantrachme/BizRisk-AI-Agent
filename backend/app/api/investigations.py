@@ -3,7 +3,7 @@ import io
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -14,9 +14,54 @@ from app.api.auth import get_current_user_id, get_owned_investigation
 router = APIRouter(prefix="/investigations", tags=["investigations"])
 
 
+def run_investigation_workflow(investigation_id: uuid.UUID):
+    from app.db.session import SessionLocal
+    from app.graph.workflow import app as graph_app
+    from app.services.investigation import recover_investigation_state, serialize_state
+    from app.models.investigation import Investigation
+    import logging
+    import json
+
+    logger = logging.getLogger("bizrisk.background")
+
+    with SessionLocal() as db:
+        inv = db.get(Investigation, investigation_id)
+        if not inv:
+            logger.error(f"Background task: Investigation {investigation_id} not found.")
+            return
+        if inv.status != "created":
+            logger.warning(f"Background task: Investigation {investigation_id} is already in status {inv.status}. Skipping execution.")
+            return
+
+        try:
+            inv.status = "PENDING"
+            state = recover_investigation_state(db, investigation_id)
+            state["status"] = "PENDING"
+            inv.persistent_graph_state = serialize_state(state)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Background task: Failed to initialize graph state for {investigation_id}: {e}")
+            return
+
+    try:
+        graph_app.invoke(state)
+    except Exception as e:
+        logger.error(f"Background task: Exception in workflow execution for {investigation_id}: {e}", exc_info=True)
+        with SessionLocal() as db:
+            inv = db.get(Investigation, investigation_id)
+            if inv:
+                inv.status = "FAILED"
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+
+
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_investigation(
     payload: InvestigationCreate,
+    background_tasks: BackgroundTasks,
     current_user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -49,6 +94,7 @@ def create_investigation(
         db.rollback()
         raise
 
+    background_tasks.add_task(run_investigation_workflow, investigation.id)
 
     return {
         "id": str(investigation.id),
@@ -334,6 +380,12 @@ def resume_investigation(
     investigation: Investigation = Depends(get_owned_investigation),
     db: Session = Depends(get_db),
 ) -> dict:
+    if investigation.status in {"COMPLETED", "RUNNING"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot resume investigation from status: {investigation.status}"
+        )
+
     from app.models.research_task import ResearchTask as ResearchTaskModel
     from app.services.audit import record_event
 
