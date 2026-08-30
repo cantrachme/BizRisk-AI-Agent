@@ -1,7 +1,9 @@
 from functools import lru_cache
+from typing import Any
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 
 class Settings(BaseSettings):
@@ -31,6 +33,25 @@ class Settings(BaseSettings):
     max_llm_calls: int = 50
     token_budget: int = 100000
 
+    cors_origins: list[str] = ["http://localhost:3000"]
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            if v.startswith("postgres://"):
+                return "postgresql+psycopg://" + v[11:]
+            if v.startswith("postgresql://"):
+                return "postgresql+psycopg://" + v[13:]
+        return v
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
+        return v
+
     @field_validator(
         "max_research_depth",
         "max_browser_actions",
@@ -45,6 +66,13 @@ class Settings(BaseSettings):
             raise ValueError("Limit must be non-negative")
         return v
 
+    def model_post_init(self, __context: Any) -> None:
+        if self.environment.lower() in ("production", "prod"):
+            if self.debug:
+                raise ValueError("debug must be False in production environment")
+            if not self.database_url:
+                raise ValueError("database_url is required in production environment")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -55,3 +83,4 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+

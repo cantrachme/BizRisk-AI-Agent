@@ -44,8 +44,12 @@ def create_source(
         config_json=config_str
     )
     db.add(source)
-    db.commit()
-    db.refresh(source)
+    try:
+        db.commit()
+        db.refresh(source)
+    except Exception:
+        db.rollback()
+        raise
     return source
 
 def update_source(db: Session, source_id: uuid.UUID, **kwargs) -> Optional[SourceRegistry]:
@@ -57,9 +61,14 @@ def update_source(db: Session, source_id: uuid.UUID, **kwargs) -> Optional[Sourc
             source.config_json = json.dumps(v)
         elif hasattr(source, k):
             setattr(source, k, v)
-    db.commit()
-    db.refresh(source)
+    try:
+        db.commit()
+        db.refresh(source)
+    except Exception:
+        db.rollback()
+        raise
     return source
+
 
 def enable_source(db: Session, source_id: uuid.UUID, enabled: bool = True) -> Optional[SourceRegistry]:
     return update_source(db, source_id, enabled=enabled)
@@ -107,7 +116,9 @@ def populate_default_sources(db: Session) -> None:
     try:
         db.query(SourceRegistry).first()
     except Exception:
+        db.rollback()
         return
+
 
     defaults = [
         {

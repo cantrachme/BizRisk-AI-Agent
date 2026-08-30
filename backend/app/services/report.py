@@ -153,25 +153,30 @@ def generate_investigation_report(
     report_dict["meta"]["rule_version"] = RISK_RULE_VERSION
 
     with db_lock:
-        latest_report = (
-            db.query(Report)
-            .filter(Report.investigation_id == investigation_id)
-            .order_by(Report.version.desc())
-            .first()
-        )
-        db_version = (latest_report.version + 1) if latest_report else 1
+        try:
+            latest_report = (
+                db.query(Report)
+                .filter(Report.investigation_id == investigation_id)
+                .order_by(Report.version.desc())
+                .first()
+            )
+            db_version = (latest_report.version + 1) if latest_report else 1
 
-        report_dict["meta"]["report_version"] = str(db_version)
+            report_dict["meta"]["report_version"] = str(db_version)
 
-        new_report = Report(
-            investigation_id=investigation_id,
-            version=db_version,
-            report_json=json.dumps(report_dict),
-            qa_status="PENDING",
-            created_at=datetime.now(timezone.utc),
-        )
-        db.add(new_report)
-        db.commit()
-        db.refresh(new_report)
+            new_report = Report(
+                investigation_id=investigation_id,
+                version=db_version,
+                report_json=json.dumps(report_dict),
+                qa_status="PENDING",
+                created_at=datetime.now(timezone.utc),
+            )
+            db.add(new_report)
+            db.commit()
+            db.refresh(new_report)
+        except Exception:
+            db.rollback()
+            raise
 
     return report_dict
+

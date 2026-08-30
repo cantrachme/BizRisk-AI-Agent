@@ -18,11 +18,15 @@ from app.services.report import generate_investigation_report
 from app.services.qa import validate_report, validate_report_grounding
 
 
+from sqlalchemy.pool import StaticPool
+
+
 @pytest.fixture(name="db_session")
 def fixture_db_session():
     engine = create_engine(
-        "sqlite:///./test_report_reproducibility.db",
+        "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
     Base.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(
@@ -33,6 +37,7 @@ def fixture_db_session():
         yield session
     finally:
         session.close()
+
 
 
 @pytest.fixture(name="investigation_id")

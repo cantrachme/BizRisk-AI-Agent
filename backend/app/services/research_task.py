@@ -64,9 +64,13 @@ def save_research_tasks(
             db.add(new_task)
             persisted.append(new_task)
 
-    db.commit()
-    for p in persisted:
-        db.refresh(p)
+    try:
+        db.commit()
+        for p in persisted:
+            db.refresh(p)
+    except Exception:
+        db.rollback()
+        raise
     return persisted
 
 
@@ -114,9 +118,14 @@ def update_research_task_status(
         if intervention_reason:
             task.intervention_reason = intervention_reason
 
-    db.commit()
-    db.refresh(task)
+    try:
+        db.commit()
+        db.refresh(task)
+    except Exception:
+        db.rollback()
+        raise
     return task
+
 
 
 def get_research_tasks_for_investigation(
