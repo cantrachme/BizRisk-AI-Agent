@@ -43,6 +43,7 @@ export default function InvestigationPage() {
   const [polling, setPolling] = useState(false);
   const [resumeLoading, setResumeLoading] = useState(false);
   const [error, setError] = useState('');
+  const [pipelineCollapsed, setPipelineCollapsed] = useState(true);
   
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -214,6 +215,80 @@ export default function InvestigationPage() {
     }
   };
 
+  const getStageState = (stage: string) => {
+    const status = detail.status.toUpperCase();
+    const node = (detail.current_node || '').toUpperCase();
+    
+    // Intake
+    if (stage === 'Intake') {
+      return { isCompleted: true, isActive: false };
+    }
+    
+    // Entity Discovery
+    if (stage === 'Entity Discovery') {
+      const isCompleted = ['PENDING_RESEARCH', 'RESEARCH', 'ENTITY_RESOLUTION', 'RISK_ANALYSIS', 'REPORT_GENERATION', 'QA', 'COMPLETED', 'FAILED'].includes(status) || node !== 'INTAKE';
+      const isActive = status === 'NORMALIZED' || node === 'DISCOVERY';
+      return { isCompleted, isActive };
+    }
+    
+    // Browser Research
+    if (stage === 'Browser Research') {
+      const isCompleted = ['ENTITY_RESOLUTION', 'RISK_ANALYSIS', 'REPORT_GENERATION', 'QA', 'COMPLETED', 'FAILED'].includes(status);
+      const isActive = ['PENDING_RESEARCH', 'RESEARCH'].includes(status) || node === 'BROWSER_RESEARCH';
+      return { isCompleted, isActive };
+    }
+    
+    // Evidence Validation
+    if (stage === 'Evidence Validation') {
+      const isCompleted = ['ENTITY_RESOLUTION', 'RISK_ANALYSIS', 'REPORT_GENERATION', 'QA', 'COMPLETED', 'FAILED'].includes(status);
+      const isActive = ['PENDING_RESEARCH', 'RESEARCH'].includes(status) || node === 'BROWSER_RESEARCH';
+      return { isCompleted, isActive };
+    }
+    
+    // Entity Resolution
+    if (stage === 'Entity Resolution') {
+      const isCompleted = ['RISK_ANALYSIS', 'REPORT_GENERATION', 'QA', 'COMPLETED', 'FAILED'].includes(status);
+      const isActive = status === 'ENTITY_RESOLUTION' || node === 'ENTITY_RESOLUTION';
+      return { isCompleted, isActive };
+    }
+    
+    // Risk Analysis
+    if (stage === 'Risk Analysis') {
+      const isCompleted = ['REPORT_GENERATION', 'QA', 'COMPLETED', 'FAILED'].includes(status);
+      const isActive = status === 'RISK_ANALYSIS' || node === 'RISK_ANALYSIS';
+      return { isCompleted, isActive };
+    }
+    
+    // Report
+    if (stage === 'Report') {
+      const isCompleted = ['QA', 'COMPLETED', 'FAILED'].includes(status);
+      const isActive = status === 'REPORT_GENERATION' || node === 'REPORT_GENERATION';
+      return { isCompleted, isActive };
+    }
+    
+    // QA
+    if (stage === 'QA') {
+      const isCompleted = ['COMPLETED', 'FAILED'].includes(status);
+      const isActive = status === 'QA' || node === 'QA';
+      return { isCompleted, isActive };
+    }
+    
+    return { isCompleted: false, isActive: false };
+  };
+
+  const browserSessions = detail?.browser_sessions || [];
+  
+  // Calculate browser statistics
+  const totalAttempted = browserSessions.length;
+  const successfulCount = browserSessions.filter((s: any) => s.status === 'SUCCESS').length;
+  const blockedCount = browserSessions.filter((s: any) => s.status === 'BLOCKED' || s.status === 'BLOCKED_OR_ERROR').length;
+  const irrelevantCount = browserSessions.filter((s: any) => s.status === 'IRRELEVANT_CONTENT' || s.status === 'IRRELEVANT').length;
+  const failedCount = totalAttempted - successfulCount - blockedCount - irrelevantCount;
+  
+  const fallbackUsed = browserSessions.some((s: any) => s.source_type === 'fallback') ? 'YES' : 'NO';
+  const selectedSourceObj = browserSessions.find((s: any) => s.selected_as_evidence === true);
+  const selectedSource = selectedSourceObj ? selectedSourceObj.source_name : 'None';
+
   return (
     <div style={containerStyle}>
       {/* Top Breadcrumb & Controls */}
@@ -330,6 +405,168 @@ export default function InvestigationPage() {
                 <span style={specValueStyle}>{detail.input.location || 'None'}</span>
               </div>
             </div>
+          </div>
+
+          {/* Research Pipeline Progress and Browser Attempts */}
+          <div className="glass-panel" style={innerPanelStyle}>
+            <h3 style={panelHeaderStyle}>Research Pipeline Logs</h3>
+            
+            {/* Visual stage progression indicator */}
+            <div style={{
+              display: 'flex',
+              gap: '6px',
+              justifyContent: 'space-between',
+              background: 'rgba(255,255,255,0.01)',
+              border: '1px solid rgba(255,255,255,0.04)',
+              borderRadius: '8px',
+              padding: '12px',
+              overflowX: 'auto',
+            }}>
+              {['Intake', 'Entity Discovery', 'Browser Research', 'Evidence Validation', 'Entity Resolution', 'Risk Analysis', 'Report', 'QA'].map((stage, idx, arr) => {
+                const { isCompleted, isActive } = getStageState(stage);
+                return (
+                  <React.Fragment key={stage}>
+                    <div style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      minWidth: '70px',
+                      textAlign: 'center',
+                      opacity: isActive || isCompleted ? 1 : 0.3,
+                    }}>
+                      <span style={{
+                        width: '24px',
+                        height: '24px',
+                        borderRadius: '50%',
+                        background: isCompleted ? '#10b981' : isActive ? '#f59e0b' : 'rgba(255,255,255,0.1)',
+                        color: isCompleted || isActive ? '#000' : '#fff',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '11px',
+                        fontWeight: 'bold',
+                        marginBottom: '4px',
+                      }}>
+                        {isCompleted ? '✓' : idx + 1}
+                      </span>
+                      <span style={{
+                        fontSize: '10px',
+                        color: isCompleted ? '#10b981' : isActive ? '#f59e0b' : '#9ca3af',
+                        fontWeight: '600',
+                      }}>{stage}</span>
+                    </div>
+                    {idx < arr.length - 1 && (
+                      <span style={{
+                        alignSelf: 'center',
+                        fontSize: '12px',
+                        color: 'rgba(255,255,255,0.15)',
+                        marginBottom: '16px',
+                      }}>→</span>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+
+            {/* Browser Research statistics summary */}
+            <div style={{
+              marginTop: '16px',
+              background: 'rgba(255,255,255,0.02)',
+              border: '1px solid rgba(255,255,255,0.05)',
+              borderRadius: '8px',
+              padding: '12px',
+            }}>
+              <h4 style={{ margin: '0 0 8px 0', fontSize: '13px', color: '#fff', fontWeight: 'bold' }}>Browser Agent Session Stats</h4>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))',
+                gap: '8px',
+                fontSize: '12px',
+              }}>
+                <div>Attempted: <strong>{totalAttempted}</strong></div>
+                <div>Successful: <strong style={{ color: '#34d399' }}>{successfulCount}</strong></div>
+                <div>Blocked: <strong style={{ color: '#f87171' }}>{blockedCount}</strong></div>
+                <div>Irrelevant: <strong style={{ color: '#f59e0b' }}>{irrelevantCount}</strong></div>
+                <div>Failed: <strong style={{ color: '#ef4444' }}>{failedCount}</strong></div>
+                <div>Fallback Used: <strong>{fallbackUsed}</strong></div>
+                <div style={{ gridColumn: '1 / -1' }}>Final Selected Source: <strong style={{ color: '#60a5fa' }}>{selectedSource}</strong></div>
+              </div>
+            </div>
+
+            {/* Collapsible Source Attempts log */}
+            {totalAttempted > 0 && (
+              <div style={{ marginTop: '12px' }}>
+                <button 
+                  onClick={() => setPipelineCollapsed(!pipelineCollapsed)}
+                  style={{
+                    width: '100%',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                    borderRadius: '6px',
+                    padding: '8px',
+                    color: '#fff',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
+                >
+                  <span>{pipelineCollapsed ? '▶ Show Detailed Source Attempts Log' : '▼ Hide Detailed Source Attempts Log'}</span>
+                  <span>({totalAttempted} Attempts)</span>
+                </button>
+
+                {!pipelineCollapsed && (
+                  <div style={{
+                    maxHeight: '300px',
+                    overflowY: 'auto',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                    borderRadius: '6px',
+                    marginTop: '8px',
+                    background: 'rgba(0,0,0,0.2)',
+                  }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', textAlign: 'left' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.02)' }}>
+                          <th style={{ padding: '6px' }}>#</th>
+                          <th style={{ padding: '6px' }}>Source</th>
+                          <th style={{ padding: '6px' }}>Type</th>
+                          <th style={{ padding: '6px' }}>Status</th>
+                          <th style={{ padding: '6px' }}>Confidence</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {browserSessions.sort((a: any, b: any) => (a.attempt_order || 0) - (b.attempt_order || 0)).map((s: any, sIdx: number) => {
+                          const isSuccess = s.status === 'SUCCESS';
+                          const statusColor = isSuccess ? '#34d399' : (s.status === 'BLOCKED' || s.status === 'BLOCKED_OR_ERROR' ? '#f87171' : '#f59e0b');
+                          
+                          return (
+                            <tr key={s.id || sIdx} style={{
+                              borderBottom: '1px solid rgba(255,255,255,0.04)',
+                              background: isSuccess ? 'rgba(52, 211, 153, 0.03)' : 'transparent',
+                            }}>
+                              <td style={{ padding: '6px' }}>{s.attempt_order || sIdx + 1}</td>
+                              <td style={{ padding: '6px' }}>
+                                <strong>{s.source_name || s.domain}</strong>
+                                {s.url && (
+                                  <div style={{ fontSize: '9px', opacity: 0.5, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {s.url}
+                                  </div>
+                                )}
+                              </td>
+                              <td style={{ padding: '6px', textTransform: 'capitalize' }}>{s.source_type}</td>
+                              <td style={{ padding: '6px', color: statusColor, fontWeight: 'bold' }}>{s.status}</td>
+                              <td style={{ padding: '6px' }}>{(s.confidence * 100).toFixed(0)}%</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Discovered Entities */}
@@ -472,32 +709,49 @@ export default function InvestigationPage() {
           
           {/* Risk Card */}
           {((detail.risk_score !== null && detail.risk_score !== undefined) || risk !== null) && (() => {
-            const displayScore = detail.risk_score !== null && detail.risk_score !== undefined 
+            const isInsufficient = (risk as any)?.insufficient_evidence || evidence.filter(ev => ev.field_name !== 'candidate_entities').length === 0;
+            const displayScore = isInsufficient ? 'N/A' : (detail.risk_score !== null && detail.risk_score !== undefined 
               ? detail.risk_score 
-              : risk?.overall_risk?.score ?? null;
-            const displayLevel = detail.risk_level || risk?.overall_risk?.level || null;
+              : risk?.overall_risk?.score ?? null);
+            const displayLevel = isInsufficient ? 'INSUFFICIENT EVIDENCE' : (detail.risk_level || risk?.overall_risk?.level || null);
+            const displayColor = isInsufficient ? '#f59e0b' : getRiskColor(displayLevel);
+            const displayGlow = isInsufficient ? 'rgba(245, 158, 11, 0.15)' : getRiskGlow(displayLevel);
 
             return (
               <div className="glass-panel" style={{
                 ...riskPanelStyle,
-                borderColor: getRiskColor(displayLevel),
-                boxShadow: `0 0 16px ${getRiskGlow(displayLevel)}`
+                borderColor: displayColor,
+                boxShadow: `0 0 16px ${displayGlow}`
               }}>
                 <h3 style={panelHeaderStyle}>Risk Assessment Output</h3>
                 <div style={riskScoreContainerStyle}>
                   <div style={scoreCircleStyle}>
-                    <span style={{ fontSize: '42px', fontWeight: '900', color: getRiskColor(displayLevel) }}>
+                    <span style={{ fontSize: '42px', fontWeight: '900', color: displayColor }}>
                       {displayScore !== null ? displayScore : 'N/A'}
                     </span>
                     <span style={{ fontSize: '12px', color: 'var(--foreground-muted)', fontWeight: '600' }}>SCORE / 100</span>
                   </div>
                   <div style={riskLevelInfoStyle}>
                     <span style={{ fontSize: '13px', color: 'var(--foreground-muted)' }}>Risk Classification</span>
-                    <h4 style={{ fontSize: '24px', fontWeight: '800', color: getRiskColor(displayLevel) }}>
+                    <h4 style={{ fontSize: '20px', fontWeight: '800', color: displayColor }}>
                       {displayLevel || 'UNKNOWN'}
                     </h4>
                   </div>
                 </div>
+                {isInsufficient && (
+                  <div style={{
+                    marginTop: '16px',
+                    padding: '10px',
+                    borderRadius: '6px',
+                    background: 'rgba(245, 158, 11, 0.05)',
+                    border: '1px dashed rgba(245, 158, 11, 0.2)',
+                    fontSize: '12px',
+                    color: 'var(--foreground-muted)',
+                    lineHeight: '1.4',
+                  }}>
+                    ⚠️ Verification pipeline resolved no external registry or web evidence records. Risk assessment is incomplete due to insufficient evidence.
+                  </div>
+                )}
 
                 {risk && (
                   <div style={categoryBreakdownStyle}>

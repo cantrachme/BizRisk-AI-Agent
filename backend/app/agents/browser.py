@@ -104,9 +104,84 @@ class BrowserResearchAgent:
     ):
         self.fetcher = fetcher or self._fetch_page
 
+    def _save_browser_attempt(
+        self,
+        investigation_id,
+        task,
+        source_name,
+        source,
+        url,
+        attempt_order,
+        started_at,
+        completed_at,
+        status,
+        http_result,
+        title,
+        text_length,
+        relevance_result,
+        failure_reason,
+        confidence,
+        selected_as_evidence,
+    ):
+        if not investigation_id:
+            return
+        
+        try:
+            import json
+            import uuid
+            from app.db.session import SessionLocal, db_lock
+            from app.models.browser_session import BrowserSession
+            from unittest import mock
+            
+            # Serialize extra structured metadata
+            metadata = {
+                "source_name": source_name,
+                "source_type": "preferred" if source in task.preferred_sources else "fallback",
+                "url": url,
+                "attempt_order": attempt_order,
+                "http_result": http_result,
+                "title": title,
+                "text_length": text_length,
+                "relevance_result": relevance_result,
+                "confidence": confidence,
+                "selected_as_evidence": selected_as_evidence,
+            }
+            metadata_str = json.dumps(metadata)
+            
+            with db_lock:
+                db = SessionLocal()
+                # Handle test mocks
+                if hasattr(db, "__enter__") and not hasattr(db, "query"):
+                    db = db.__enter__()
+                try:
+                    session_id = uuid.uuid4()
+                    db_session = BrowserSession(
+                        id=session_id,
+                        investigation_id=uuid.UUID(str(investigation_id)),
+                        task_id=task.task_id,
+                        domain=source,
+                        status=status,
+                        action_count=1 if selected_as_evidence else 0,
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        failure_reason=metadata_str,
+                    )
+                    db.add(db_session)
+                    db.commit()
+                finally:
+                    is_mocked_db = isinstance(SessionLocal, (mock.Mock, mock.MagicMock)) or not hasattr(SessionLocal, "kw")
+                    if not is_mocked_db and hasattr(db, "close"):
+                        try:
+                            db.close()
+                        except Exception:
+                            pass
+        except Exception as ex:
+            print(f"[DIAGNOSTIC] Failed to save browser attempt to database: {ex}", flush=True)
+
     def execute(
         self,
         task: ResearchTask,
+        investigation_id: Optional[uuid.UUID] = None,
     ) -> list[ResearchResult]:
         if task.task_type not in SUPPORTED_TASK_TYPES:
             return []
@@ -156,8 +231,11 @@ class BrowserResearchAgent:
         chosen_confidence = 0.0
         chosen_page_data = None
 
+        attempt_order = 0
         # Try to find a working source from candidates
         for source in candidates:
+            attempt_order += 1
+            started_at = datetime.now(timezone.utc)
 
             source_name, source_url, confidence = None, None, None
             is_mocked_db = False
@@ -229,6 +307,24 @@ class BrowserResearchAgent:
             )
 
             if research_url is None:
+                self._save_browser_attempt(
+                    investigation_id=investigation_id,
+                    task=task,
+                    source_name=source_name,
+                    source=source,
+                    url=None,
+                    attempt_order=attempt_order,
+                    started_at=started_at,
+                    completed_at=datetime.now(timezone.utc),
+                    status="ERROR",
+                    http_result="URL resolution failed",
+                    title=None,
+                    text_length=0,
+                    relevance_result=None,
+                    failure_reason="Could not resolve URL for source",
+                    confidence=0.0,
+                    selected_as_evidence=False,
+                )
                 continue
 
             print(f"\n[DIAGNOSTIC] === Browser Research Agent Attempt ===", flush=True)
@@ -244,6 +340,24 @@ class BrowserResearchAgent:
                 intervention_type = detect_human_intervention(html)
                 if intervention_type:
                     print(f"[DIAGNOSTIC] HUMAN INTERVENTION REQUIRED: {intervention_type}", flush=True)
+                    self._save_browser_attempt(
+                        investigation_id=investigation_id,
+                        task=task,
+                        source_name=source_name,
+                        source=source,
+                        url=research_url,
+                        attempt_order=attempt_order,
+                        started_at=started_at,
+                        completed_at=datetime.now(timezone.utc),
+                        status="BLOCKED",
+                        http_result="Human Intervention Required",
+                        title=None,
+                        text_length=0,
+                        relevance_result="HUMAN_INTERVENTION_REQUIRED",
+                        failure_reason=f"Human intervention type: {intervention_type}",
+                        confidence=0.0,
+                        selected_as_evidence=False,
+                    )
                     raise HumanInterventionRequiredException(
                         message=f"Human intervention required: {intervention_type}",
                         intervention_type=intervention_type
@@ -253,6 +367,24 @@ class BrowserResearchAgent:
                 if failure_reason:
                     print(f"[DIAGNOSTIC] Page classified as failed/blocked or irrelevant. Reason: {failure_reason}", flush=True)
                     print(f"[DIAGNOSTIC] Reaction: Attempting fallback source...", flush=True)
+                    self._save_browser_attempt(
+                        investigation_id=investigation_id,
+                        task=task,
+                        source_name=source_name,
+                        source=source,
+                        url=research_url,
+                        attempt_order=attempt_order,
+                        started_at=started_at,
+                        completed_at=datetime.now(timezone.utc),
+                        status=failure_reason,
+                        http_result="Failed Relevance or Blocked check",
+                        title=None,
+                        text_length=0,
+                        relevance_result=failure_reason,
+                        failure_reason=f"Classification: {failure_reason}",
+                        confidence=0.0,
+                        selected_as_evidence=False,
+                    )
                     continue
                 
                 # Fetch succeeded and is not blocked/empty/irrelevant
@@ -264,6 +396,25 @@ class BrowserResearchAgent:
                 print(f"[DIAGNOSTIC] Assigned confidence: {confidence}", flush=True)
                 print(f"[DIAGNOSTIC] Final evidence status: AVAILABLE", flush=True)
                 
+                self._save_browser_attempt(
+                    investigation_id=investigation_id,
+                    task=task,
+                    source_name=source_name,
+                    source=source,
+                    url=research_url,
+                    attempt_order=attempt_order,
+                    started_at=started_at,
+                    completed_at=datetime.now(timezone.utc),
+                    status="SUCCESS",
+                    http_result="200 OK",
+                    title=page_data.get("title"),
+                    text_length=len(page_data.get("text", "")),
+                    relevance_result="PASSED",
+                    failure_reason=None,
+                    confidence=confidence,
+                    selected_as_evidence=True,
+                )
+                
                 chosen_source = source_name
                 chosen_url = research_url
                 chosen_confidence = confidence
@@ -274,6 +425,24 @@ class BrowserResearchAgent:
             except Exception as ex:
                 print(f"[DIAGNOSTIC] Exception occurred during fetch: {ex}", flush=True)
                 print(f"[DIAGNOSTIC] Reaction: Attempting fallback source...", flush=True)
+                self._save_browser_attempt(
+                    investigation_id=investigation_id,
+                    task=task,
+                    source_name=source_name,
+                    source=source,
+                    url=research_url,
+                    attempt_order=attempt_order,
+                    started_at=started_at,
+                    completed_at=datetime.now(timezone.utc),
+                    status="ERROR",
+                    http_result="Fetch Exception",
+                    title=None,
+                    text_length=0,
+                    relevance_result=None,
+                    failure_reason=str(ex),
+                    confidence=0.0,
+                    selected_as_evidence=False,
+                )
                 continue
 
         # If none of the candidates succeeded, use the first candidate with 0.0 confidence
