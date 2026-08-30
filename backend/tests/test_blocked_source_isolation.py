@@ -107,4 +107,4 @@ def test_blocked_source_isolation_downstream(db_session, investigation_id):
     risk_signals = db_session.query(RiskSignal).filter(RiskSignal.investigation_id == investigation_id).all()
     # No risk rules triggered
     assert len(risk_signals) == 0
-    assert updated_inv.risk_score == 0
+    assert updated_inv.risk_score is None

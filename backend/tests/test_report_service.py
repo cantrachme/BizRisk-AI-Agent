@@ -97,7 +97,7 @@ def test_report_api_404_not_found(db_session):
 def test_empty_evidence_report(db_session, investigation_id):
     report = generate_investigation_report(db_session, investigation_id)
 
-    assert report["overall_risk"]["score"] == 0
+    assert report["overall_risk"]["score"] is None
     assert len(report["major_findings"]) == 0
     assert len(report["evidence_summary"]) == 0
 

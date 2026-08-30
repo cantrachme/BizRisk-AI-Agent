@@ -156,7 +156,8 @@ def test_empty_evidence_handling(db_session, investigation_id):
 
     # Re-run analysis with empty evidence
     analysis = analyze_investigation(db_session, investigation_id)
-    assert analysis["overall_risk"]["score"] == 0
+    assert analysis["overall_risk"]["score"] is None
+    assert analysis["overall_risk"]["level"] == "INSUFFICIENT_EVIDENCE"
     assert len(analysis["risk_signals"]) == 0
 
     # Stale signals should be cleared from database

@@ -100,6 +100,28 @@ def calculate_risk_analysis(
     for idx, vev in enumerate(validated_evs, start=1):
         print(f"[DIAGNOSTIC] Validated Record {idx}: ID={vev.id} | Field={vev.field_name} | Value={vev.field_value} | Source={vev.source_name} | Confidence={vev.confidence}", flush=True)
 
+    # Determine whether sufficient evidence exists before running deterministic rules
+    non_candidate_evs = [e for e in validated_evs if e.field_name != "candidate_entities"]
+    insufficient_evidence = len(non_candidate_evs) == 0
+    print(f"[DIAGNOSTIC] Validated Non-Candidate Evidence Count: {len(non_candidate_evs)} | Insufficient: {insufficient_evidence}", flush=True)
+
+    if insufficient_evidence:
+        overall_score = None
+        risk_level = "INSUFFICIENT_EVIDENCE"
+        category_scores = {}
+        print(f"[DIAGNOSTIC] Final Risk Score: {overall_score}", flush=True)
+        print(f"[DIAGNOSTIC] Final Risk Level: {risk_level}", flush=True)
+        print(f"[DIAGNOSTIC] === Risk Engine Evaluation Ended (INSUFFICIENT EVIDENCE) ===\n", flush=True)
+        return {
+            "overall_risk": {
+                "score": overall_score,
+                "level": risk_level,
+            },
+            "category_scores": category_scores,
+            "risk_signals": [],
+            "insufficient_evidence": True,
+        }
+
     # Evaluate deterministic rules only against validated evidence.
     triggered_rules = run_all_rules(validated_evs)
     print(f"[DIAGNOSTIC] Triggered Rules: {list(triggered_rules.keys())}", flush=True)
@@ -158,9 +180,6 @@ def calculate_risk_analysis(
         category_scores[cat] = min(sum(weights), 100)
         print(f"[DIAGNOSTIC] Category '{cat}' weights: {weights} | Score: {category_scores[cat]}", flush=True)
 
-    non_candidate_evs = [e for e in validated_evs if e.field_name != "candidate_entities"]
-    insufficient_evidence = len(non_candidate_evs) == 0
-    print(f"[DIAGNOSTIC] Validated Non-Candidate Evidence Count: {len(non_candidate_evs)} | Insufficient: {insufficient_evidence}", flush=True)
     print(f"[DIAGNOSTIC] Final Risk Score: {overall_score}", flush=True)
     print(f"[DIAGNOSTIC] Final Risk Level: {risk_level}", flush=True)
     print(f"[DIAGNOSTIC] === Risk Engine Evaluation Ended ===\n", flush=True)

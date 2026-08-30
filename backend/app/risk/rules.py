@@ -46,6 +46,14 @@ def normalize_evidence(res: Any) -> NormalizedEvidence:
                 val = val_loaded
         except (ValueError, TypeError):
             pass
+
+        confidence = res.confidence
+        # Force confidence to 0.0 for failed/not found evidence values
+        if val in ["NOT_FOUND", "UNAVAILABLE"]:
+            confidence = 0.0
+        elif isinstance(val, dict) and str(val.get("text")).strip().upper() == "NOT_FOUND":
+            confidence = 0.0
+
         return NormalizedEvidence(
             id=res.research_result_id,
             task_id=res.task_id,
@@ -54,7 +62,7 @@ def normalize_evidence(res: Any) -> NormalizedEvidence:
             source_name=res.source_name,
             source_url=res.source_url,
             retrieved_at=retrieved_dt,
-            confidence=res.confidence,
+            confidence=confidence,
         )
     # ResearchResult Pydantic model
     else:
@@ -64,15 +72,24 @@ def normalize_evidence(res: Any) -> NormalizedEvidence:
             retrieved_dt = datetime.now(timezone.utc)
         if retrieved_dt.tzinfo is None:
             retrieved_dt = retrieved_dt.replace(tzinfo=timezone.utc)
+
+        val = res.field_value
+        confidence = res.confidence
+        # Force confidence to 0.0 for failed/not found evidence values
+        if val in ["NOT_FOUND", "UNAVAILABLE"]:
+            confidence = 0.0
+        elif isinstance(val, dict) and str(val.get("text")).strip().upper() == "NOT_FOUND":
+            confidence = 0.0
+
         return NormalizedEvidence(
             id=res.result_id,
             task_id=res.task_id,
             field_name=res.field_name,
-            field_value=res.field_value,
+            field_value=val,
             source_name=res.source_name,
             source_url=res.source_url,
             retrieved_at=retrieved_dt,
-            confidence=res.confidence,
+            confidence=confidence,
         )
 
 
@@ -87,10 +104,39 @@ def normalize_name(name: str) -> str:
     return name
 
 
-def normalize_address(addr: str) -> str:
+def is_full_address(addr: Any) -> bool:
+    if not addr:
+        return False
+    if isinstance(addr, dict):
+        addr_str = str(addr.get("text") or addr.get("title") or "").lower()
+    else:
+        addr_str = str(addr).lower()
+        
+    if addr_str.upper() == "NOT_FOUND":
+        return False
+        
+    words = [w for w in re.findall(r"\b\w+\b", addr_str)]
+    if len(words) < 2:
+        return False
+    street_keywords = {
+        "street", "road", "st", "rd", "plot", "sector", "phase", "building", "floor", 
+        "nagar", "puram", "lane", "hno", "flat", "office", "address", "addr", "block", "place", 
+        "colony", "landmark", "near", "behind", "opposite", "bazar", "market", "extension", 
+        "ext", "chowk", "square", "avenue", "drive", "highway"
+    }
+    if not any(kw in words for kw in street_keywords) and len(words) < 5:
+        return False
+    return True
+
+
+def normalize_address(addr: Any) -> str:
     if not addr:
         return ""
-    return re.sub(r"[^a-z0-9]", "", addr.lower())
+    if isinstance(addr, dict):
+        addr_str = str(addr.get("text") or addr.get("title") or "").lower()
+    else:
+        addr_str = str(addr).lower()
+    return re.sub(r"[^a-z0-9]", "", addr_str)
 
 
 def normalize_activity(act: str) -> str:
@@ -138,24 +184,34 @@ def evaluate_legal_name_conflict(evidences: List[NormalizedEvidence]) -> Optiona
 
 
 def evaluate_address_major_mismatch(evidences: List[NormalizedEvidence]) -> Optional[Dict[str, Any]]:
-    address_evidences = [ev for ev in evidences if ev.field_name in ["address", "registered_address", "contact_address"]]
-    if len(address_evidences) < 2:
-        return None
+    # Group evidences by field type to avoid cross-comparing registered vs contact addresses
+    groups = {
+        "registered": [ev for ev in evidences if ev.field_name in ["registered_address", "address"]],
+        "contact": [ev for ev in evidences if ev.field_name in ["contact_address"]],
+    }
 
-    for i in range(len(address_evidences)):
-        for j in range(i + 1, len(address_evidences)):
-            ev1 = address_evidences[i]
-            ev2 = address_evidences[j]
-            norm1 = normalize_address(str(ev1.field_value))
-            norm2 = normalize_address(str(ev2.field_value))
-            if norm1 and norm2 and norm1 != norm2:
-                avg_conf = (ev1.confidence + ev2.confidence) / 2.0
-                return {
-                    "triggered": True,
-                    "evidence_ids": [ev1.id, ev2.id],
-                    "confidence": avg_conf,
-                    "description": f"Address mismatch: '{ev1.field_value}' ({ev1.source_name}) vs '{ev2.field_value}' ({ev2.source_name}).",
-                }
+    for group_name, group_evs in groups.items():
+        if len(group_evs) < 2:
+            continue
+        for i in range(len(group_evs)):
+            for j in range(i + 1, len(group_evs)):
+                ev1 = group_evs[i]
+                ev2 = group_evs[j]
+                
+                # Check if both are full addresses
+                if not is_full_address(ev1.field_value) or not is_full_address(ev2.field_value):
+                    continue
+                
+                norm1 = normalize_address(ev1.field_value)
+                norm2 = normalize_address(ev2.field_value)
+                if norm1 and norm2 and norm1 != norm2:
+                    avg_conf = (ev1.confidence + ev2.confidence) / 2.0
+                    return {
+                        "triggered": True,
+                        "evidence_ids": [ev1.id, ev2.id],
+                        "confidence": avg_conf,
+                        "description": f"Address mismatch ({group_name}): '{ev1.field_value}' ({ev1.source_name}) vs '{ev2.field_value}' ({ev2.source_name}).",
+                    }
     return None
 
 

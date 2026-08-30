@@ -22,13 +22,15 @@ def SessionLocal():
     return db_session_mod.SessionLocal()
 
 
+_sentinel = object()
+
 def update_investigation_in_db(
     investigation_id_str: str | None,
     current_node: str,
     status: str | None = None,
     retry_count: int | None = None,
-    risk_score: int | None = None,
-    risk_level: str | None = None,
+    risk_score = _sentinel,
+    risk_level = _sentinel,
     resolved_entity_id: uuid.UUID | None = None,
     entity_confidence: float | None = None,
     completed: bool = False,
@@ -57,9 +59,9 @@ def update_investigation_in_db(
                     inv.status = status
                 if retry_count is not None:
                     inv.retry_count = retry_count
-                if risk_score is not None:
+                if risk_score is not _sentinel:
                     inv.risk_score = risk_score
-                if risk_level:
+                if risk_level is not _sentinel:
                     inv.risk_level = risk_level
                 if resolved_entity_id is not None:
                     inv.resolved_entity_id = resolved_entity_id
