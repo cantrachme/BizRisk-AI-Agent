@@ -64,6 +64,17 @@ def update_source(db: Session, source_id: uuid.UUID, **kwargs) -> Optional[Sourc
 def enable_source(db: Session, source_id: uuid.UUID, enabled: bool = True) -> Optional[SourceRegistry]:
     return update_source(db, source_id, enabled=enabled)
 
+CANONICAL_SOURCE_MAP = {
+    "GST Portal": "gst.gov.in",
+    "MCA Portal": "mca.gov.in",
+    "Company Website": "company_website",
+    "General Web": "generic_web",
+    "Third-Party Source": "third_party",
+}
+
+def to_canonical_source(name: str) -> str:
+    return CANONICAL_SOURCE_MAP.get(name, name)
+
 def get_preferred_sources(db: Session, task_type: str) -> Tuple[List[str], List[str]]:
     populate_default_sources(db)
     sources = (
@@ -83,8 +94,14 @@ def get_preferred_sources(db: Session, task_type: str) -> Tuple[List[str], List[
             return ["company_website"], ["generic_web"]
         return [], []
 
-    names = [s.name for s in sources]
-    return [names[0]], names[1:]
+    raw_names = [s.name for s in sources]
+    canonical_names = []
+    for name in raw_names:
+        c_name = to_canonical_source(name)
+        if c_name not in canonical_names:
+            canonical_names.append(c_name)
+
+    return [canonical_names[0]], canonical_names[1:]
 
 def populate_default_sources(db: Session) -> None:
     try:
