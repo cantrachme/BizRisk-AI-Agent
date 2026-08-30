@@ -28,6 +28,7 @@ class PlannerAgent:
         
         gstin = normalized_input.get("gstin") or raw_input.get("gstin")
         cin = normalized_input.get("cin") or raw_input.get("cin")
+        epfo_code = normalized_input.get("epfo_code") or raw_input.get("epfo_code")
         website = normalized_input.get("website") or raw_input.get("website")
         business_name = normalized_input.get("business_name") or raw_input.get("business_name")
         location = normalized_input.get("location") or raw_input.get("location")
@@ -46,6 +47,7 @@ class PlannerAgent:
         # 1. Process candidate entities discovered in previous tasks
         discovered_gstin = None
         discovered_cin = None
+        discovered_epfo_code = None
         discovered_website = None
 
         for res in results:
@@ -56,12 +58,14 @@ class PlannerAgent:
                     best = candidates[0]
                     discovered_gstin = best.get("gstin")
                     discovered_cin = best.get("cin")
+                    discovered_epfo_code = best.get("epfo_code")
                     discovered_website = best.get("website")
                     break
 
         # Resolve targets (favor raw/normalized input, fallback to discovered values)
         target_gstin = gstin or discovered_gstin
         target_cin = cin or discovered_cin
+        target_epfo = epfo_code or discovered_epfo_code
         target_website = website or discovered_website
 
         # 2. Schedule Entity Discovery if no specific identifiers are available
@@ -79,6 +83,7 @@ class PlannerAgent:
 
         gst_pref, gst_fall = ["gst.gov.in"], ["third_party"]
         mca_pref, mca_fall = ["mca.gov.in"], ["third_party"]
+        epfo_pref, epfo_fall = ["epfindia.gov.in"], ["third_party"]
         web_pref, web_fall = ["company_website"], ["generic_web"]
         disc_pref, disc_fall = ["generic_web"], []
 
@@ -88,13 +93,14 @@ class PlannerAgent:
                 gst_pref = ["gst.gov.in" if x == "GST Portal" else x for x in gst_pref]
                 gst_fall = ["third_party" if x == "Third-Party Source" else x for x in gst_fall]
                 mca_pref, mca_fall = get_preferred_sources(db, "MCA_VERIFICATION")
+                epfo_pref, epfo_fall = get_preferred_sources(db, "EPFO_VERIFICATION")
                 web_pref, web_fall = get_preferred_sources(db, "WEBSITE_VERIFICATION")
                 disc_pref, disc_fall = get_preferred_sources(db, "ENTITY_DISCOVERY")
         except Exception:
             pass
 
         # 2. Schedule Entity Discovery if no specific identifiers are available
-        if not target_gstin and not target_cin:
+        if not target_gstin and not target_cin and not target_epfo:
             if "ENTITY_DISCOVERY" not in scheduled_task_types:
                 target_str = ""
                 if business_name:
@@ -148,7 +154,23 @@ class PlannerAgent:
                     )
                 )
 
-        # 5. Schedule Website Verification if target website is known but not verified
+        # 5. Schedule EPFO Verification if target EPFO code is known but not verified
+        if target_epfo:
+            if "EPFO_VERIFICATION" not in scheduled_task_types:
+                new_tasks.append(
+                    ResearchTask(
+                        task_id=next_task_id(),
+                        task_type="EPFO_VERIFICATION",
+                        target=target_epfo,
+                        objective=f"Verify EPFO code {target_epfo} and retrieve establishment registration details.",
+                        required_fields=["establishment_name", "epfo_status", "registered_address"],
+                        priority=1,
+                        preferred_sources=epfo_pref,
+                        fallback_sources=epfo_fall
+                    )
+                )
+
+        # 6. Schedule Website Verification if target website is known but not verified
         if target_website:
             if "WEBSITE_VERIFICATION" not in scheduled_task_types:
                 new_tasks.append(

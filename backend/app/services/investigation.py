@@ -77,6 +77,8 @@ def recover_investigation_state(db: Session, investigation_id: uuid.UUID) -> Dic
                 return ["legal_name", "gst_status", "registered_address", "business_activity"]
             elif task_type == "MCA_VERIFICATION":
                 return ["legal_name", "company_status", "incorporation_date", "registered_address"]
+            elif task_type == "EPFO_VERIFICATION":
+                return ["establishment_name", "epfo_status", "registered_address"]
             elif task_type == "WEBSITE_VERIFICATION":
                 return ["website_status", "contact_address", "established_year"]
             else:
@@ -87,13 +89,15 @@ def recover_investigation_state(db: Session, investigation_id: uuid.UUID) -> Dic
                 return ["gst.gov.in"]
             elif task_type == "MCA_VERIFICATION":
                 return ["mca.gov.in"]
+            elif task_type == "EPFO_VERIFICATION":
+                return ["epfindia.gov.in"]
             elif task_type == "WEBSITE_VERIFICATION":
                 return ["company_website"]
             else:
                 return ["generic_web"]
 
         def get_fallback_sources_for_task_type(task_type: str) -> list:
-            if task_type in {"GST_VERIFICATION", "MCA_VERIFICATION"}:
+            if task_type in {"GST_VERIFICATION", "MCA_VERIFICATION", "EPFO_VERIFICATION"}:
                 return ["third_party"]
             elif task_type == "WEBSITE_VERIFICATION":
                 return ["generic_web"]
