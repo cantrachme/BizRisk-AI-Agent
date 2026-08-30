@@ -149,11 +149,16 @@ def save_research_results(
             evidences.append(evidence)
 
     if evidences:
-        db.commit()
-        for ev in evidences:
-            db.refresh(ev)
+        try:
+            db.commit()
+            for ev in evidences:
+                db.refresh(ev)
+        except Exception:
+            db.rollback()
+            raise
 
     return evidences
+
 
 
 def save_research_result(

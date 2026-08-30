@@ -222,8 +222,13 @@ def validate_report(
         .first()
     )
     if latest_report:
-        latest_report.qa_status = status_str
-        db.commit()
+        try:
+            latest_report.qa_status = status_str
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
 
     return {
         "status": status_str,

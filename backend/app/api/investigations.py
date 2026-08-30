@@ -38,9 +38,14 @@ def create_investigation(
         status="created",
     )
 
-    db.add(investigation)
-    db.commit()
-    db.refresh(investigation)
+    try:
+        db.add(investigation)
+        db.commit()
+        db.refresh(investigation)
+    except Exception:
+        db.rollback()
+        raise
+
 
     return {
         "id": str(investigation.id),
@@ -341,7 +346,12 @@ def resume_investigation(
 
     # 2. Update investigation status to PENDING_RESEARCH
     investigation.status = "PENDING_RESEARCH"
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
 
     # 3. Log INVESTIGATION_RESUMED event
     record_event(

@@ -52,4 +52,6 @@ def record_event(
             db.add(event)
             db.commit()
         except Exception as e:
+            db.rollback()
             logger.error(f"Failed to persist event to database for investigation {investigation_id}: {e}")
+

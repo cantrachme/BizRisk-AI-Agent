@@ -154,27 +154,31 @@ def persist_risk_analysis(
     """
     Clears old risk signals for the given investigation, saves new ones, and commits them.
     """
-    # Clear old signals
-    db.query(RiskSignal).filter(RiskSignal.investigation_id == investigation_id).delete()
-    db.commit()
+    try:
+        # Clear old signals
+        db.query(RiskSignal).filter(RiskSignal.investigation_id == investigation_id).delete()
 
-    created_signals = []
-    for sig in analysis_results.get("risk_signals", []):
-        db_sig = RiskSignal(
-            investigation_id=investigation_id,
-            category=sig["category"],
-            code=sig["code"],
-            severity=sig["severity"],
-            description=sig["description"],
-            risk_weight=sig["risk_weight"],
-            confidence=sig["confidence"],
-            evidence_ids=json.dumps(sig["evidence_ids"]),
-        )
-        db.add(db_sig)
-        created_signals.append(db_sig)
+        created_signals = []
+        for sig in analysis_results.get("risk_signals", []):
+            db_sig = RiskSignal(
+                investigation_id=investigation_id,
+                category=sig["category"],
+                code=sig["code"],
+                severity=sig["severity"],
+                description=sig["description"],
+                risk_weight=sig["risk_weight"],
+                confidence=sig["confidence"],
+                evidence_ids=json.dumps(sig["evidence_ids"]),
+            )
+            db.add(db_sig)
+            created_signals.append(db_sig)
 
-    db.commit()
-    for db_sig in created_signals:
-        db.refresh(db_sig)
+        db.commit()
+        for db_sig in created_signals:
+            db.refresh(db_sig)
+    except Exception:
+        db.rollback()
+        raise
 
     return created_signals
+
