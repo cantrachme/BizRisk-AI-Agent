@@ -68,9 +68,21 @@ class IntakeAgent:
         if "://" not in value:
             value = f"https://{value}"
 
-        parsed = urlparse(value)
-
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        try:
+            parsed = urlparse(value)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                return None
+            
+            hostname = parsed.hostname
+            if not hostname:
+                return None
+            
+            if not re.match(r"^[a-z0-9\-\.:]+$", hostname):
+                return None
+            
+            if "." not in hostname and hostname != "localhost" and ":" not in hostname:
+                return None
+        except Exception:
             return None
 
         return value

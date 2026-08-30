@@ -40,3 +40,13 @@ def test_intake_accepts_partial_input():
 
     assert result["business_name"] is None
     assert result["website"] == "https://example.com"
+
+
+def test_intake_rejects_invalid_url():
+    result = IntakeAgent().process(
+        {
+            "website": "not-a-valid-url",
+        }
+    )
+    assert result["website"] is None
+

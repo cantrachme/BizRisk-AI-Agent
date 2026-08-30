@@ -669,3 +669,32 @@ def test_intake(payload: IntakeTestRequest) -> dict:
     agent = IntakeAgent()
     return agent.process(payload.model_dump())
 
+
+class DiscoveryTestRequest(BaseModel):
+    business_name: str | None = None
+    gstin: str | None = None
+    cin: str | None = None
+    website: str | None = None
+    location: str | None = None
+
+
+class DiscoveryCandidateTest(BaseModel):
+    name: str | None = None
+    gstin: str | None = None
+    cin: str | None = None
+    website: str | None = None
+    location: str | None = None
+    confidence: float
+
+
+class DiscoveryTestResponse(BaseModel):
+    candidate_entities: list[DiscoveryCandidateTest] = []
+
+
+@test_router.post("/test/entity-discovery", response_model=DiscoveryTestResponse)
+def test_entity_discovery(payload: DiscoveryTestRequest) -> dict:
+    from app.agents.discovery import DiscoveryAgent
+    agent = DiscoveryAgent()
+    return agent.process(payload.model_dump())
+
+
