@@ -1355,13 +1355,17 @@ def qa_node(state: InvestigationState) -> dict:
         if qa_result["status"] == "FAIL":
             qa_loop_count += 1
 
-        status = "COMPLETED" if qa_result["status"] == "PASS" or qa_loop_count >= 2 else "FAILED_QA"
-        completed = (qa_result["status"] == "PASS" or qa_loop_count >= 2)
-
-        updated_state = update_state_from_tracking(state)
         if qa_result["status"] == "PASS":
             status = "COMPLETED"
             completed = True
+        elif qa_loop_count >= 2:
+            status = "FAILED"
+            completed = True
+        else:
+            status = "FAILED_QA"
+            completed = False
+
+        updated_state = update_state_from_tracking(state)
 
         updated_state.update({
             "qa_result": qa_result,

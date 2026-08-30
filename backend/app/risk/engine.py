@@ -76,7 +76,7 @@ def calculate_risk_analysis(
             continue
         if not str(ev.source_name).strip() or not str(ev.field_name).strip():
             continue
-        if not (0.0 <= float(ev.confidence) <= 1.0):
+        if not (0.5 <= float(ev.confidence) <= 1.0):
             continue
         seen_ids.add(evidence_id)
         validated_evs.append(ev)
