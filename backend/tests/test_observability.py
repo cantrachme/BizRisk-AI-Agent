@@ -180,7 +180,9 @@ def test_observability_qa_retry_events(db_session, investigation_id):
     def mock_execute(self, task):
         return []
 
-    with patch("app.db.session.SessionLocal", MockSessionLocal), patch("app.agents.browser.BrowserResearchAgent.execute", mock_execute):
+    with patch("app.db.session.SessionLocal", MockSessionLocal), \
+         patch("app.agents.discovery.DiscoveryAgent.process", lambda self, x: {"candidate_entities": []}), \
+         patch("app.agents.browser.BrowserResearchAgent.execute", mock_execute):
         output_state = graph_app.invoke(initial_state)
 
     events = db_session.query(InvestigationEvent).filter(InvestigationEvent.investigation_id == investigation_id).all()

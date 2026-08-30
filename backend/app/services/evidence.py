@@ -212,14 +212,10 @@ def get_cached_source_result(
     elif norm_source == "mca portal":
         source_names.append("mca.gov.in")
 
-    # Query for matching evidence records linked to a ResearchTask with the same parameters
     evs = (
         db.query(Evidence)
-        .join(ResearchTaskModel, Evidence.research_task_id == ResearchTaskModel.id)
+        .outerjoin(ResearchTaskModel, Evidence.research_task_id == ResearchTaskModel.id)
         .filter(
-            func.upper(func.trim(ResearchTaskModel.task_type)) == norm_task_type,
-            func.lower(func.trim(ResearchTaskModel.target)) == norm_target,
-            func.lower(func.trim(ResearchTaskModel.objective)) == norm_objective,
             Evidence.field_name == field_name,
             func.lower(func.trim(Evidence.source_name)).in_(source_names),
         )
@@ -228,6 +224,15 @@ def get_cached_source_result(
     )
 
     for ev in evs:
+        # Check task match if linked
+        if ev.research_task:
+            if (
+                ev.research_task.task_type.strip().upper() != norm_task_type
+                or ev.research_task.target.strip().lower() != norm_target
+                or ev.research_task.objective.strip().lower() != norm_objective
+            ):
+                continue
+
         # Verify freshness of the cached evidence
         if is_evidence_fresh(ev.retrieved_timestamp, field_name):
             return ev

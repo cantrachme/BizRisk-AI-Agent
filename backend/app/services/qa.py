@@ -185,9 +185,10 @@ def validate_report(
     # Check B: Entity Verification
     entity = report.get("entity") or {}
     entity_confidence = report.get("entity_confidence")
+    entity_name = entity.get("business_name") or entity.get("name")
 
     # Entity must be non-empty and confidence >= 0.5 (TRD threshold)
-    if not entity or entity.get("business_name") is None:
+    if not entity or entity_name is None:
         entity_verified = False
         issues.append({
             "type": "WRONG_ENTITY",

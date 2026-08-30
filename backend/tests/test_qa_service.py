@@ -469,7 +469,9 @@ def test_qa_retry_routes_back_to_planner(db_session, investigation_id):
     def mock_execute(self, task):
         return []
 
-    with patch("app.db.session.SessionLocal", MockSessionLocal), patch("app.agents.browser.BrowserResearchAgent.execute", mock_execute):
+    with patch("app.db.session.SessionLocal", MockSessionLocal), \
+         patch("app.agents.discovery.DiscoveryAgent.process", lambda self, x: {"candidate_entities": []}), \
+         patch("app.agents.browser.BrowserResearchAgent.execute", mock_execute):
         output_state = graph_app.invoke(initial_state)
 
     assert output_state["qa_loop_count"] >= 1
@@ -507,7 +509,9 @@ def test_qa_stops_after_retry_limit(db_session, investigation_id):
     def mock_execute(self, task):
         return []
 
-    with patch("app.db.session.SessionLocal", MockSessionLocal), patch("app.agents.browser.BrowserResearchAgent.execute", mock_execute):
+    with patch("app.db.session.SessionLocal", MockSessionLocal), \
+         patch("app.agents.discovery.DiscoveryAgent.process", lambda self, x: {"candidate_entities": []}), \
+         patch("app.agents.browser.BrowserResearchAgent.execute", mock_execute):
         output_state = graph_app.invoke(initial_state)
 
     assert output_state["qa_loop_count"] == 3
