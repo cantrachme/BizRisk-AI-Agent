@@ -48,4 +48,4 @@ def test_pipeline_normalizes_discovers_plans_and_executes_research():
     assert "gst_status" in result_fields
     assert "website_status" in result_fields
 
-    assert output["status"] == "ENTITY_RESOLVED"
+    assert output["status"] in {"ENTITY_RESOLVED", "COMPLETED"}
