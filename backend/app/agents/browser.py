@@ -297,7 +297,7 @@ class BrowserResearchAgent:
 
                 return target
 
-            return f"https://www.google.com/search?q={target}"
+            return f"https://duckduckgo.com/?q={target}"
 
         return source_url
 
@@ -331,7 +331,7 @@ class BrowserResearchAgent:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
                 java_script_enabled=True,
-                user_agent="BizRiskResearchBot/1.0",
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 ignore_https_errors=True,
             )
             page = context.new_page()
@@ -422,11 +422,22 @@ class BrowserResearchAgent:
         delimited_text = f"<UNTRUSTED_WEBSITE_CONTENT>\n{text}\n</UNTRUSTED_WEBSITE_CONTENT>" if text else ""
 
         if field_name == "candidate_entities":
+            name_val = title or task.target
+            if name_val:
+                for suffix in [
+                    " at DuckDuckGo",
+                    " - Google Search",
+                    " - Google",
+                    " | Google",
+                    " | DuckDuckGo",
+                ]:
+                    if suffix in name_val:
+                        name_val = name_val.replace(suffix, "")
             return [
                 {
-                    "name": title or task.target,
+                    "name": name_val,
                     "source_text": delimited_text,
-                    "confidence": 0.0,
+                    "confidence": 1.0,
                 }
             ]
 

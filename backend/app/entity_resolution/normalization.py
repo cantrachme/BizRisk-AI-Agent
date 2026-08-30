@@ -83,9 +83,12 @@ def normalize_entity(entity: dict) -> dict:
     if NormalizedNameCache.has("entity", entity):
         return NormalizedNameCache.get("entity", entity)
 
+    name_val = entity.get("name") or entity.get("business_name")
+    biz_name_val = entity.get("business_name") or entity.get("name")
+
     res = {
-        "name": normalize_text(entity.get("name")),
-        "business_name": normalize_text(entity.get("business_name")),
+        "name": normalize_text(name_val),
+        "business_name": normalize_text(biz_name_val),
         "gstin": normalize_identifier(entity.get("gstin")),
         "cin": normalize_identifier(entity.get("cin")),
         "website": normalize_website(entity.get("website")),
