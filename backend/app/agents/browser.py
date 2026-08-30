@@ -317,29 +317,27 @@ class BrowserResearchAgent:
         )
 
     @staticmethod
-    def _fetch_page(
-        url: str,
-    ) -> str:
-        request = Request(
-            url,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 "
-                    "(compatible; BizRiskAI/1.0)"
-                )
-            },
-        )
+    def _fetch_page(url: str) -> str:
+        from urllib.parse import urlparse
+        from playwright.sync_api import sync_playwright
 
-        with urlopen(
-            request,
-            timeout=10,
-        ) as response:
-            charset = response.headers.get_content_charset() or "utf-8"
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Unsupported research URL")
 
-            return response.read().decode(
-                charset,
-                errors="replace",
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                java_script_enabled=True,
+                user_agent="BizRiskResearchBot/1.0",
+                ignore_https_errors=True,
             )
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            html = page.content()
+            context.close()
+            browser.close()
+            return html
 
     @staticmethod
     def _sanitize_prompt_injection(text: str | None) -> str | None:
