@@ -85,6 +85,8 @@ class PlannerAgent:
         try:
             with SessionLocal() as db:
                 gst_pref, gst_fall = get_preferred_sources(db, "GST_VERIFICATION")
+                gst_pref = ["gst.gov.in" if x == "GST Portal" else x for x in gst_pref]
+                gst_fall = ["third_party" if x == "Third-Party Source" else x for x in gst_fall]
                 mca_pref, mca_fall = get_preferred_sources(db, "MCA_VERIFICATION")
                 web_pref, web_fall = get_preferred_sources(db, "WEBSITE_VERIFICATION")
                 disc_pref, disc_fall = get_preferred_sources(db, "ENTITY_DISCOVERY")

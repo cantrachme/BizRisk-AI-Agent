@@ -875,8 +875,7 @@ def entity_resolution_node(state: InvestigationState) -> dict:
     log_node_event(investigation_id, "NODE_STARTED", "entity_resolution", "STARTED")
 
     try:
-        if state.get("status") == "WAITING_FOR_USER":
-            return state
+        is_waiting_for_user = state.get("status") == "WAITING_FOR_USER"
 
         from app.core.tracking import (
             init_tracking_from_state,
@@ -887,7 +886,7 @@ def entity_resolution_node(state: InvestigationState) -> dict:
 
         # Check existing limits BEFORE executing entity resolution node
         reason = check_limits(state)
-        if reason:
+        if reason and not is_waiting_for_user:
             update_investigation_in_db(state.get("investigation_id"), "entity_resolution", status="LIMIT_REACHED")
             log_node_event(investigation_id, "NODE_COMPLETED", "entity_resolution", "LIMIT_REACHED", {"reason": reason})
             ret_val = update_state_from_tracking(state)
@@ -921,7 +920,7 @@ def entity_resolution_node(state: InvestigationState) -> dict:
             if investigation_id:
                 ResolvedEntityCache.set(investigation_id, normalized_input, resolution)
 
-        status = "ENTITY_RESOLVED" if resolution["matched"] else "ENTITY_UNRESOLVED"
+        status = "WAITING_FOR_USER" if is_waiting_for_user else ("ENTITY_RESOLVED" if resolution["matched"] else "ENTITY_UNRESOLVED")
         resolved_entity_id = None
         entity = resolution.get("entity")
         if entity:
@@ -939,7 +938,7 @@ def entity_resolution_node(state: InvestigationState) -> dict:
 
         # Check limits AFTER executing entity resolution
         reason = check_limits(updated_state)
-        if reason:
+        if reason and not is_waiting_for_user:
             updated_state.update({
                 "status": "LIMIT_REACHED",
                 "stop_reason": reason,
@@ -963,7 +962,7 @@ def entity_resolution_node(state: InvestigationState) -> dict:
             entity_confidence=resolution["confidence"],
             state=updated_state
         )
-        log_node_event(investigation_id, "NODE_COMPLETED", "entity_resolution", "COMPLETED", {"status": status, "confidence": resolution["confidence"]})
+        log_node_event(investigation_id, "NODE_COMPLETED", "entity_resolution", "COMPLETED" if not is_waiting_for_user else "WAITING_FOR_USER", {"status": status, "confidence": resolution["confidence"]})
         return updated_state
     except Exception as e:
         err_msg = str(e)
