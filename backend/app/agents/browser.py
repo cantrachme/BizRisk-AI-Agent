@@ -526,7 +526,14 @@ class BrowserResearchAgent:
                 ignore_https_errors=True,
             )
             page = context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                page.goto(url, wait_until="networkidle", timeout=10000)
+            except Exception:
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=10000)
+                except Exception:
+                    pass
+            page.wait_for_timeout(2000)
             html = page.content()
             context.close()
             browser.close()
