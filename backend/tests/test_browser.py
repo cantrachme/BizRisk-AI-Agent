@@ -295,3 +295,82 @@ def test_fallback_sources_execution():
     assert results[0].confidence == 0.50
     assert results[1].field_value == "AVAILABLE"
 
+
+def test_browser_sessions_structured_attempts():
+    import json
+    from datetime import timezone
+    from unittest.mock import patch
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.db.base import Base
+    from app.models.browser_session import BrowserSession
+    from app.models.investigation import Investigation
+    
+    # 1. Setup in-memory SQLite DB
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    TestingSessionLocal = sessionmaker(
+        autocommit=False, autoflush=False, bind=engine
+    )
+    
+    db = TestingSessionLocal()
+    try:
+        # Create investigation
+        inv = Investigation(
+            status="created",
+            input_data='{"gstin": "27ABCDE1234F1Z5"}',
+        )
+        db.add(inv)
+        db.commit()
+        db.refresh(inv)
+        
+        task = make_task(
+            preferred_sources=["gst.gov.in"],
+            fallback_sources=["third_party"],
+            target="27ABCDE1234F1Z5",
+        )
+
+        def fetcher(url: str) -> str:
+            if "gst.gov.in" in url:
+                return "<html><title>Access Denied</title><body>403 Forbidden cloudflare security check.</body></html>"
+            elif "duckduckgo" in url:
+                return "<html><title>DuckDuckGo Search</title><body>GSTIN: 27ABCDE1234F1Z5 is active. ABC Foods Private Limited.</body></html>"
+            raise ValueError(f"Unknown URL: {url}")
+
+        agent = BrowserResearchAgent(fetcher=fetcher)
+        
+        # Patch SessionLocal to use our TestingSessionLocal in BrowserResearchAgent
+        with patch("app.db.session.SessionLocal", TestingSessionLocal):
+            results = agent.execute(task, investigation_id=inv.id)
+        
+        # 2. Query BrowserSession records
+        sessions = db.query(BrowserSession).filter(BrowserSession.investigation_id == inv.id).all()
+        assert len(sessions) == 2
+        
+        # Sort by attempt_order
+        sessions = sorted(sessions, key=lambda s: json.loads(s.failure_reason)["attempt_order"])
+        
+        s1 = sessions[0]
+        assert s1.domain == "gst.gov.in"
+        assert s1.status == "BLOCKED_OR_ERROR"
+        m1 = json.loads(s1.failure_reason)
+        assert m1["source_name"] == "GST Portal"
+        assert m1["attempt_order"] == 1
+        assert m1["selected_as_evidence"] is False
+        
+        s2 = sessions[1]
+        assert s2.domain == "third_party"
+        assert s2.status == "SUCCESS"
+        m2 = json.loads(s2.failure_reason)
+        assert m2["source_name"] == "Third-Party Source"
+        assert m2["attempt_order"] == 2
+        assert m2["selected_as_evidence"] is True
+        
+    finally:
+        db.close()
+

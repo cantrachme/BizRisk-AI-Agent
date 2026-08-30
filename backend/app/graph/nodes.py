@@ -677,7 +677,13 @@ def browser_node(state: InvestigationState) -> dict:
                         task_results = exec_func(task)
                     else:
                         agent = BrowserResearchAgent()
-                        task_results = agent.execute(task)
+                        try:
+                            task_results = agent.execute(task, investigation_id=investigation_id)
+                        except TypeError as te:
+                            if any(msg in str(te) for msg in ["positional argument", "keyword argument", "unexpected keyword", "takes"]):
+                                task_results = agent.execute(task)
+                            else:
+                                raise
                     if task_results:
                         if investigation_id:
                             from app.services.research_task import update_research_task_status

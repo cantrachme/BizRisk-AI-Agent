@@ -161,6 +161,27 @@ def list_incomplete_investigations(
 def get_investigation(
     investigation: Investigation = Depends(get_owned_investigation),
 ) -> dict:
+    sessions_db = investigation.browser_sessions
+    browser_sessions_list = []
+    for s in sessions_db:
+        attempt_details = {}
+        if s.failure_reason:
+            try:
+                attempt_details = json.loads(s.failure_reason)
+            except Exception:
+                attempt_details = {"raw_failure_reason": s.failure_reason}
+        
+        browser_sessions_list.append({
+            "id": str(s.id),
+            "task_id": s.task_id,
+            "domain": s.domain,
+            "status": s.status,
+            "action_count": s.action_count,
+            "started_at": s.started_at.isoformat() if s.started_at else None,
+            "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+            **attempt_details
+        })
+
     return {
         "id": str(investigation.id),
         "status": investigation.status,
@@ -174,6 +195,7 @@ def get_investigation(
         "completed_at": investigation.completed_timestamp,
         "created_at": investigation.created_at,
         "updated_at": investigation.updated_at,
+        "browser_sessions": browser_sessions_list,
     }
 
 
@@ -240,6 +262,7 @@ def get_investigation_risk(
             }
             for sig in analysis["risk_signals"]
         ],
+        "insufficient_evidence": analysis.get("insufficient_evidence", False),
     }
 
 

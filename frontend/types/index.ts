@@ -27,6 +27,7 @@ export interface InvestigationDetail {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  browser_sessions?: any[];
 }
 
 export interface EvidenceItem {
