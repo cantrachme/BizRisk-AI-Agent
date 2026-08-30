@@ -108,118 +108,220 @@ class BrowserResearchAgent:
         self,
         task: ResearchTask,
     ) -> list[ResearchResult]:
-        source = self._select_source(task)
-
-        if source is None:
-            return []
-
-        # Check domain restrictions (TRD §80)
-        allowed_domains = getattr(task, "allowed_domains", None)
-        if allowed_domains is not None:
-            if source not in allowed_domains:
-                return []
-
         if task.task_type not in SUPPORTED_TASK_TYPES:
             return []
 
-        source_name, source_url, confidence = None, None, None
-        is_mocked_db = False
+        # Build list of unique candidate sources to attempt in order
+        candidates = []
+        for src in [*task.preferred_sources, *task.fallback_sources]:
+            if src not in candidates:
+                # Check domain restrictions (TRD §80)
+                allowed_domains = getattr(task, "allowed_domains", None)
+                if allowed_domains is not None and src not in allowed_domains:
+                    continue
 
-        try:
-            from app.db.session import SessionLocal, db_lock
-            from app.services.source_registry import get_source_by_name
-            from unittest import mock
-            is_mocked_db = isinstance(SessionLocal, (mock.Mock, mock.MagicMock)) or not hasattr(SessionLocal, "kw")
+                # Verify that the source is known/registered
+                is_known = src in SOURCES or src in DISPLAY_TO_CANONICAL
+                if not is_known:
+                    try:
+                        from app.db.session import SessionLocal, db_lock
+                        from app.services.source_registry import get_source_by_name
+                        from unittest import mock
+                        is_mocked_db = isinstance(SessionLocal, (mock.Mock, mock.MagicMock)) or not hasattr(SessionLocal, "kw")
+                        with db_lock:
+                            db = SessionLocal()
+                            if hasattr(db, "__enter__") and not hasattr(db, "query"):
+                                db = db.__enter__()
+                            try:
+                                db_source = get_source_by_name(db, src)
+                                if db_source:
+                                    is_known = True
+                            finally:
+                                if not is_mocked_db and hasattr(db, "close"):
+                                    try:
+                                        db.close()
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
+                
+                if is_known:
+                    candidates.append(src)
 
-            with db_lock:
-                db = SessionLocal()
-                if hasattr(db, "__enter__") and not hasattr(db, "query"):
-                    db = db.__enter__()
-                try:
-                    db_source = get_source_by_name(db, source)
-                    if not db_source and source in DISPLAY_TO_CANONICAL:
-                        db_source = get_source_by_name(db, DISPLAY_TO_CANONICAL[source])
-                    if db_source:
-                        source_name = str(db_source.name) if db_source.name else None
-                        source_url = str(db_source.domain) if db_source.domain else None
-                        import json
-                        config = json.loads(db_source.config_json or "{}")
-                        confidence = config.get("confidence")
-                finally:
-                    if not is_mocked_db and hasattr(db, "close"):
-                        try:
-                            db.close()
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-
-        if source_name is None or (not is_mocked_db and source in SOURCES):
-            if source in SOURCES:
-                source_name, default_url, default_confidence = SOURCES[source]
-            elif source in DISPLAY_TO_CANONICAL:
-                canonical_key = DISPLAY_TO_CANONICAL[source]
-                source_name = source
-                _, default_url, default_confidence = SOURCES[canonical_key]
-            else:
-                source_name = source_name or source
-                default_url = None
-                default_confidence = 0.50
-        else:
-            default_url = None
-            default_confidence = 0.50
-
-        if source_url is None:
-            if source in SOURCES:
-                source_url = SOURCES[source][1]
-            elif source in DISPLAY_TO_CANONICAL:
-                source_url = SOURCES[DISPLAY_TO_CANONICAL[source]][1]
-            else:
-                source_url = default_url
-
-        if confidence is None:
-            if source in SOURCES:
-                confidence = SOURCES[source][2]
-            elif source in DISPLAY_TO_CANONICAL:
-                confidence = SOURCES[DISPLAY_TO_CANONICAL[source]][2]
-            else:
-                confidence = default_confidence
-
-        research_url = self._resolve_url(
-            task=task,
-            source=source,
-            source_url=source_url,
-        )
-
-        if research_url is None:
+        if not candidates:
             return []
 
-        try:
-            html = self.fetcher(research_url)
-            intervention_type = detect_human_intervention(html)
-            if intervention_type:
-                raise HumanInterventionRequiredException(
-                    message=f"Human intervention required: {intervention_type}",
-                    intervention_type=intervention_type
-                )
-            
-            failure_reason = self._is_failed_or_blocked_retrieval(html, task.target)
-            if failure_reason:
-                page_data = {
-                    "title": None,
-                    "text": "",
-                }
-                confidence = 0.0
+        chosen_source = None
+        chosen_url = None
+        chosen_confidence = 0.0
+        chosen_page_data = None
+
+        # Try to find a working source from candidates
+        for source in candidates:
+
+            source_name, source_url, confidence = None, None, None
+            is_mocked_db = False
+
+            try:
+                from app.db.session import SessionLocal, db_lock
+                from app.services.source_registry import get_source_by_name
+                from unittest import mock
+                is_mocked_db = isinstance(SessionLocal, (mock.Mock, mock.MagicMock)) or not hasattr(SessionLocal, "kw")
+
+                with db_lock:
+                    db = SessionLocal()
+                    if hasattr(db, "__enter__") and not hasattr(db, "query"):
+                        db = db.__enter__()
+                    try:
+                        db_source = get_source_by_name(db, source)
+                        if not db_source and source in DISPLAY_TO_CANONICAL:
+                            db_source = get_source_by_name(db, DISPLAY_TO_CANONICAL[source])
+                        if db_source:
+                            source_name = str(db_source.name) if db_source.name else None
+                            source_url = str(db_source.domain) if db_source.domain else None
+                            import json
+                            config = json.loads(db_source.config_json or "{}")
+                            confidence = config.get("confidence")
+                    finally:
+                        if not is_mocked_db and hasattr(db, "close"):
+                            try:
+                                db.close()
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+            if source_name is None or (not is_mocked_db and source in SOURCES):
+                if source in SOURCES:
+                    source_name, default_url, default_confidence = SOURCES[source]
+                elif source in DISPLAY_TO_CANONICAL:
+                    canonical_key = DISPLAY_TO_CANONICAL[source]
+                    source_name = source
+                    _, default_url, default_confidence = SOURCES[canonical_key]
+                else:
+                    source_name = source_name or source
+                    default_url = None
+                    default_confidence = 0.50
             else:
+                default_url = None
+                default_confidence = 0.50
+
+            if source_url is None:
+                if source in SOURCES:
+                    source_url = SOURCES[source][1]
+                elif source in DISPLAY_TO_CANONICAL:
+                    source_url = SOURCES[DISPLAY_TO_CANONICAL[source]][1]
+                else:
+                    source_url = default_url
+
+            if confidence is None:
+                if source in SOURCES:
+                    confidence = SOURCES[source][2]
+                elif source in DISPLAY_TO_CANONICAL:
+                    confidence = SOURCES[DISPLAY_TO_CANONICAL[source]][2]
+                else:
+                    confidence = default_confidence
+
+            research_url = self._resolve_url(
+                task=task,
+                source=source,
+                source_url=source_url,
+            )
+
+            if research_url is None:
+                continue
+
+            try:
+                html = self.fetcher(research_url)
+                intervention_type = detect_human_intervention(html)
+                if intervention_type:
+                    raise HumanInterventionRequiredException(
+                        message=f"Human intervention required: {intervention_type}",
+                        intervention_type=intervention_type
+                    )
+                
+                failure_reason = self._is_failed_or_blocked_retrieval(html, task.target)
+                if failure_reason:
+                    continue
+                
+                # Fetch succeeded and is not blocked/empty/irrelevant
                 page_data = self._extract_page_data(html)
-        except HumanInterventionRequiredException:
-            raise
-        except Exception:
-            page_data = {
+                chosen_source = source_name
+                chosen_url = research_url
+                chosen_confidence = confidence
+                chosen_page_data = page_data
+                break
+            except HumanInterventionRequiredException:
+                raise
+            except Exception:
+                continue
+
+        # If none of the candidates succeeded, use the first candidate with 0.0 confidence
+        if chosen_page_data is None:
+            source = candidates[0]
+            source_name, source_url, confidence = None, None, None
+            is_mocked_db = False
+
+            try:
+                from app.db.session import SessionLocal, db_lock
+                from app.services.source_registry import get_source_by_name
+                from unittest import mock
+                is_mocked_db = isinstance(SessionLocal, (mock.Mock, mock.MagicMock)) or not hasattr(SessionLocal, "kw")
+
+                with db_lock:
+                    db = SessionLocal()
+                    if hasattr(db, "__enter__") and not hasattr(db, "query"):
+                        db = db.__enter__()
+                    try:
+                        db_source = get_source_by_name(db, source)
+                        if not db_source and source in DISPLAY_TO_CANONICAL:
+                            db_source = get_source_by_name(db, DISPLAY_TO_CANONICAL[source])
+                        if db_source:
+                            source_name = str(db_source.name) if db_source.name else None
+                            source_url = str(db_source.domain) if db_source.domain else None
+                    finally:
+                        if not is_mocked_db and hasattr(db, "close"):
+                            try:
+                                db.close()
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+            if source_name is None or (not is_mocked_db and source in SOURCES):
+                if source in SOURCES:
+                    source_name, default_url, default_confidence = SOURCES[source]
+                elif source in DISPLAY_TO_CANONICAL:
+                    canonical_key = DISPLAY_TO_CANONICAL[source]
+                    source_name = source
+                    _, default_url, default_confidence = SOURCES[canonical_key]
+                else:
+                    source_name = source_name or source
+                    default_url = None
+            else:
+                default_url = None
+
+            if source_url is None:
+                if source in SOURCES:
+                    source_url = SOURCES[source][1]
+                elif source in DISPLAY_TO_CANONICAL:
+                    source_url = SOURCES[DISPLAY_TO_CANONICAL[source]][1]
+                else:
+                    source_url = default_url
+
+            research_url = self._resolve_url(
+                task=task,
+                source=source,
+                source_url=source_url,
+            )
+
+            chosen_source = source_name
+            chosen_url = research_url
+            chosen_confidence = 0.0
+            chosen_page_data = {
                 "title": None,
                 "text": "",
             }
-            confidence = 0.0
 
         return [
             ResearchResult(
@@ -229,12 +331,12 @@ class BrowserResearchAgent:
                 field_value=self._extract_field_value(
                     task=task,
                     field_name=field_name,
-                    page_data=page_data,
+                    page_data=chosen_page_data,
                 ),
-                source_name=source_name,
-                source_url=research_url,
+                source_name=chosen_source,
+                source_url=chosen_url,
                 retrieved_at=datetime.now(timezone.utc).isoformat(),
-                confidence=confidence,
+                confidence=chosen_confidence,
             )
             for index, field_name in enumerate(
                 task.required_fields,
@@ -385,7 +487,8 @@ class BrowserResearchAgent:
 
                 return target
 
-            return f"https://duckduckgo.com/?q={target}"
+            from urllib.parse import quote
+            return f"https://duckduckgo.com/?q={quote(target)}"
 
         return source_url
 
@@ -423,7 +526,14 @@ class BrowserResearchAgent:
                 ignore_https_errors=True,
             )
             page = context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                page.goto(url, wait_until="networkidle", timeout=10000)
+            except Exception:
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=10000)
+                except Exception:
+                    pass
+            page.wait_for_timeout(2000)
             html = page.content()
             context.close()
             browser.close()

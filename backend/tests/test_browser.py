@@ -270,3 +270,28 @@ def test_report_risk_ignores_failed_evidence():
     assert "GST_INACTIVE" not in analysis["risk_signals"]
     assert analysis["overall_risk"]["score"] == 0
 
+
+def test_fallback_sources_execution():
+    # Primary is gst.gov.in (will return blocked page), Fallback is third_party (will return valid page)
+    task = make_task(
+        preferred_sources=["gst.gov.in"],
+        fallback_sources=["third_party"],
+        target="27ABCDE1234F1Z5",
+    )
+
+    def fetcher(url: str) -> str:
+        if "gst.gov.in" in url:
+            return "<html><title>Access Denied</title><body>403 Forbidden cloudflare security check.</body></html>"
+        elif "duckduckgo" in url:
+            return "<html><title>DuckDuckGo Search</title><body>GSTIN: 27ABCDE1234F1Z5 is active. ABC Foods Private Limited.</body></html>"
+        raise ValueError(f"Unknown URL: {url}")
+
+    agent = BrowserResearchAgent(fetcher=fetcher)
+    results = agent.execute(task)
+
+    # Since primary failed/blocked, it fell back to third_party and succeeded!
+    assert len(results) == 2
+    assert results[0].source_name == "Third-Party Source"
+    assert results[0].confidence == 0.50
+    assert results[1].field_value == "AVAILABLE"
+
