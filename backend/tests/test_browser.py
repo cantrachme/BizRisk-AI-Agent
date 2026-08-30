@@ -268,7 +268,7 @@ def test_report_risk_ignores_failed_evidence():
     analysis = calculate_risk_analysis([r1])
     # It should NOT trigger the GST_INACTIVE rule because evidence confidence is < 0.5
     assert "GST_INACTIVE" not in analysis["risk_signals"]
-    assert analysis["overall_risk"]["score"] == 0
+    assert analysis["overall_risk"]["score"] is None
 
 
 def test_fallback_sources_execution():

@@ -12,10 +12,12 @@ from app.agents.intake import IntakeAgent
 from app.entity_resolution.resolver import resolve_entity
 
 
-def generate_recommendation(score: int) -> str:
+def generate_recommendation(score: int | None) -> str:
     """
     Generates a deterministic risk recommendation based on the overall risk score.
     """
+    if score is None:
+        return "Risk assessment could not be completed because insufficient verified external evidence was collected."
     if score >= 61:
         return "High risk detected. Additional manual verification is highly recommended before proceeding."
     elif score >= 31:

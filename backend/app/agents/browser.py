@@ -580,7 +580,6 @@ class BrowserResearchAgent:
             "no records found",
             "no data found",
             "record not found",
-            "not found",
             "invalid gstin",
             "invalid cin",
             "invalid format"
@@ -594,7 +593,11 @@ class BrowserResearchAgent:
         page_text = page_data.get("text") or ""
         
         words = page_text.split()
-        if len(words) > 100:
+        if len(words) == 0:
+            return "EMPTY_RESPONSE"
+
+        # Apply relevance checks for pages with at least 50 words
+        if len(words) >= 50:
             target_lower = str(target).lower().strip()
             
             # Case A: target is a URL or domain
