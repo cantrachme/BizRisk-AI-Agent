@@ -821,7 +821,73 @@ class BrowserResearchAgent:
     def _clean_text(
         value: str,
     ) -> str:
+        if not value:
+            return ""
         return " ".join(value.split())
+
+    @staticmethod
+    def _extract_address_from_text(text: str) -> str:
+        if not text:
+            return "NOT_FOUND"
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        
+        address_prefixes = ["registered office", "registered address", "corporate office", "office address", "address"]
+        for i, line in enumerate(lines):
+            line_lower = line.lower()
+            for prefix in address_prefixes:
+                if prefix in line_lower:
+                    match = re.search(re.escape(prefix) + r"\s*[:\-]?\s*(.*)", line, re.IGNORECASE)
+                    if match and len(match.group(1).strip()) > 10:
+                        content = match.group(1).strip()
+                        if "." in content:
+                            content = content.split(".")[0].strip()
+                        return content
+                    
+                    addr_block = []
+                    for j in range(i, min(i + 4, len(lines))):
+                        addr_block.append(lines[j])
+                    return " | ".join(addr_block)
+                
+        indian_states = {"maharashtra", "karnataka", "delhi", "tamil nadu", "telangana", "gujarat", "west bengal", "haryana", "uttar pradesh", "mumbai", "bengaluru", "bangalore", "chennai", "hyderabad", "kolkata", "pune", "gurgaon", "noida"}
+        for i, line in enumerate(lines):
+            line_lower = line.lower()
+            if re.search(r"\b\d{6}\b", line) and any(state in line_lower for state in indian_states):
+                addr_block = []
+                start = max(0, i - 2)
+                for j in range(start, i + 1):
+                    addr_block.append(lines[j])
+                return " | ".join(addr_block)
+                
+        return "NOT_FOUND"
+
+    @staticmethod
+    def _extract_date_from_text(text: str) -> str:
+        if not text:
+            return "NOT_FOUND"
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        for line in lines:
+            line_lower = line.lower()
+            if any(kw in line_lower for kw in ["incorporated", "incorporation", "established", "founded", "estd"]):
+                match = re.search(r"\b(19\d{2}|20\d{2})\b", line)
+                if match:
+                    return match.group(1)
+                match_date = re.search(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b|\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b", line)
+                if match_date:
+                    return match_date.group(0)
+        return "NOT_FOUND"
+
+    @staticmethod
+    def _extract_status_from_text(text: str) -> str:
+        if not text:
+            return "NOT_FOUND"
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        for line in lines:
+            line_lower = line.lower()
+            if any(kw in line_lower for kw in ["status", "company status", "gst status"]):
+                for keyword in ["active", "inactive", "cancelled", "suspended", "allocated", "struck off"]:
+                    if keyword in line_lower:
+                        return keyword.upper()
+        return "NOT_FOUND"
 
     @staticmethod
     def _extract_field_value(
@@ -886,7 +952,30 @@ class BrowserResearchAgent:
         }:
             return delimited_text
 
+        if field_name in {
+            "address",
+            "registered_address",
+            "corporate_address",
+            "contact_address",
+        }:
+            return BrowserResearchAgent._extract_address_from_text(text)
+
+        if field_name in {
+            "incorporation_date",
+            "registration_date",
+            "established_year",
+        }:
+            return BrowserResearchAgent._extract_date_from_text(text)
+
+        if field_name in {
+            "company_status",
+            "registration_status",
+        }:
+            return BrowserResearchAgent._extract_status_from_text(text)
+
         return {
             "title": title,
             "text": delimited_text,
         }
+
+
