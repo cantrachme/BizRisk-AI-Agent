@@ -63,6 +63,8 @@ def generate_investigation_report(
 
     resolution = resolve_entity(normalized_input, candidates)
     entity = resolution["entity"] or {}
+    if entity and "business_name" not in entity and "name" in entity:
+        entity["business_name"] = entity["name"]
     entity_confidence = resolution["confidence"] or 0.0
 
     # 4. Obtain the current deterministic risk analysis

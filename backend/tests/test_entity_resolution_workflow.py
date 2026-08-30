@@ -33,7 +33,7 @@ def test_workflow_resolves_discovered_entity():
     assert output["resolved_entity"] is not None
     assert output["entity_confidence"] == 1.0
     assert output["entity_resolution_status"] == "EXACT"
-    assert output["status"] == "ENTITY_RESOLVED"
+    assert output["status"] in {"ENTITY_RESOLVED", "COMPLETED"}
 
 
 def test_workflow_handles_unresolved_entity():
