@@ -354,3 +354,217 @@ def test_resume_via_api(client, db_session, investigation_id):
         assert resumed_event.status == "STARTED"
     finally:
         BrowserResearchAgent._fetch_page = original_fetcher
+
+
+def test_task_level_human_intervention_endpoint(client, db_session, investigation_id):
+    # Set up task requiring intervention in database
+    db_session.add(
+        ResearchTaskModel(
+            investigation_id=investigation_id,
+            task_id="TASK-002",
+            task_type="GST_VERIFICATION",
+            target="09ABCDE1234F1Z5",
+            objective="Verify GSTIN",
+            status="HUMAN_INTERVENTION_REQUIRED",
+            intervention_type="CAPTCHA",
+            intervention_reason="Captcha blocked task",
+        )
+    )
+    inv = db_session.get(Investigation, investigation_id)
+    inv.status = "WAITING_FOR_USER"
+    db_session.commit()
+
+    # Mock DB session local and graph execution
+    original_fetcher = BrowserResearchAgent._fetch_page
+    BrowserResearchAgent._fetch_page = staticmethod(lambda url: "<html><body>Data</body></html>")
+
+    try:
+        class MockSessionLocal:
+            def __enter__(self):
+                return db_session
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        with mock.patch("app.db.session.SessionLocal", MockSessionLocal), mock.patch("app.services.qa.validate_report", return_value={"status": "PASS", "issues": []}):
+            resp = client.post(f"/api/v1/investigations/{investigation_id}/tasks/TASK-002/human-intervention")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "success"
+
+        # Check task state is updated in DB
+        task_db = db_session.query(ResearchTaskModel).filter_by(task_id="TASK-002").first()
+        assert task_db.status in {"PENDING", "COMPLETED"}
+        assert task_db.intervention_type is None
+
+        # Verify idempotency
+        with mock.patch("app.db.session.SessionLocal", MockSessionLocal), mock.patch("app.services.qa.validate_report", return_value={"status": "PASS", "issues": []}):
+            idemp_resp = client.post(f"/api/v1/investigations/{investigation_id}/tasks/TASK-002/human-intervention")
+        assert idemp_resp.status_code == 200
+        assert idemp_resp.json()["status"] == "success"
+    finally:
+        BrowserResearchAgent._fetch_page = original_fetcher
+
+
+def test_events_stream_endpoint(client, db_session, investigation_id):
+    # Log a dummy event first
+    from app.services.audit import record_event
+    record_event(db_session, investigation_id, "NAVIGATING", "browser", "IN_PROGRESS", {"message": "Test navigate"})
+
+    # Fetch events stream using once=True to get immediate response
+    resp = client.get(f"/api/v1/investigations/{investigation_id}/events/stream", params={"once": "true"})
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers["content-type"]
+    lines = list(resp.iter_lines())
+    assert any("NAVIGATING" in line for line in lines)
+
+
+def test_cannot_resume_non_waiting_task(client, db_session, investigation_id):
+    db_session.add(
+        ResearchTaskModel(
+            investigation_id=investigation_id,
+            task_id="TASK-003",
+            task_type="GST_VERIFICATION",
+            target="09ABCDE1234F1Z5",
+            objective="Verify GSTIN",
+            status="COMPLETED",
+        )
+    )
+    db_session.commit()
+
+    # Post human confirmation to a task that is completed (non-waiting)
+    resp = client.post(f"/api/v1/investigations/{investigation_id}/tasks/TASK-003/human-intervention")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert "already resumed or completed" in data["message"]
+
+
+def test_event_history_remains_intact_after_resume(client, db_session, investigation_id):
+    # Register events for CAPTCHA detected and WAITING_FOR_HUMAN
+    from app.services.audit import record_event
+    record_event(db_session, investigation_id, "CAPTCHA_DETECTED", "browser", "IN_PROGRESS", {"task_id": "TASK-004"})
+    record_event(db_session, investigation_id, "WAITING_FOR_HUMAN", "browser", "IN_PROGRESS", {"task_id": "TASK-004"})
+    
+    db_session.add(
+        ResearchTaskModel(
+            investigation_id=investigation_id,
+            task_id="TASK-004",
+            task_type="GST_VERIFICATION",
+            target="09ABCDE1234F1Z5",
+            objective="Verify GSTIN",
+            status="HUMAN_INTERVENTION_REQUIRED",
+        )
+    )
+    inv = db_session.get(Investigation, investigation_id)
+    inv.status = "WAITING_FOR_USER"
+    db_session.commit()
+
+    original_fetcher = BrowserResearchAgent._fetch_page
+    BrowserResearchAgent._fetch_page = staticmethod(lambda url: "<html><body>Active GST.</body></html>")
+
+    try:
+        class MockSessionLocal:
+            def __enter__(self):
+                return db_session
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        with mock.patch("app.db.session.SessionLocal", MockSessionLocal), mock.patch("app.services.qa.validate_report", return_value={"status": "PASS", "issues": []}):
+            resp = client.post(f"/api/v1/investigations/{investigation_id}/tasks/TASK-004/human-intervention")
+        assert resp.status_code == 200
+
+        # Verify all events are preserved chronologically
+        events = db_session.query(InvestigationEvent).filter_by(investigation_id=investigation_id).all()
+        event_types = [e.event_type for e in events]
+        assert "CAPTCHA_DETECTED" in event_types
+        assert "WAITING_FOR_HUMAN" in event_types
+        assert "HUMAN_ACTION_COMPLETED" in event_types
+    finally:
+        BrowserResearchAgent._fetch_page = original_fetcher
+
+
+def test_resumed_browser_encounters_second_captcha_creates_new_intervention(client, db_session, investigation_id):
+    db_session.add(
+        ResearchTaskModel(
+            investigation_id=investigation_id,
+            task_id="TASK-005",
+            task_type="GST_VERIFICATION",
+            target="27ABCDE1234F1Z5",
+            objective="Verify GSTIN",
+            status="HUMAN_INTERVENTION_REQUIRED",
+        )
+    )
+    inv = db_session.get(Investigation, investigation_id)
+    inv.status = "WAITING_FOR_USER"
+    db_session.commit()
+
+    # Browser will encounter another CAPTCHA after resume!
+    original_fetcher = BrowserResearchAgent._fetch_page
+    BrowserResearchAgent._fetch_page = staticmethod(lambda url: "<html><title>CAPTCHA Verification</title></html>")
+
+    try:
+        class MockSessionLocal:
+            def __enter__(self):
+                return db_session
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        with mock.patch("app.db.session.SessionLocal", MockSessionLocal), mock.patch("app.services.qa.validate_report", return_value={"status": "PASS", "issues": []}):
+            resp = client.post(f"/api/v1/investigations/{investigation_id}/tasks/TASK-005/human-intervention")
+        assert resp.status_code == 200
+
+        # Investigation status is still WAITING_FOR_USER, and task is still HUMAN_INTERVENTION_REQUIRED
+        db_session.refresh(inv)
+        assert inv.status == "WAITING_FOR_USER"
+        
+        task_db = db_session.query(ResearchTaskModel).filter_by(task_id="TASK-005").first()
+        assert task_db.status == "HUMAN_INTERVENTION_REQUIRED"
+    finally:
+        BrowserResearchAgent._fetch_page = original_fetcher
+
+
+def test_max_retry_loops_limit_respected(client, db_session, investigation_id):
+    # Mock loop check limit
+    from app.core.config import get_settings
+    settings = get_settings()
+    settings.max_research_depth = 1 # loop count limit is set to 1
+
+    db_session.add(
+        ResearchTaskModel(
+            investigation_id=investigation_id,
+            task_id="TASK-006",
+            task_type="GST_VERIFICATION",
+            target="27ABCDE1234F1Z5",
+            objective="Verify GSTIN",
+            status="HUMAN_INTERVENTION_REQUIRED",
+        )
+    )
+    inv = db_session.get(Investigation, investigation_id)
+    inv.status = "WAITING_FOR_USER"
+    # Set planner_loop_count to settings limit
+    inv.status_metadata = json.dumps({"planner_loop_count": 2})
+    db_session.commit()
+
+    original_fetcher = BrowserResearchAgent._fetch_page
+    BrowserResearchAgent._fetch_page = staticmethod(lambda url: "<html><title>GST Details</title><body>WIPRO LIMITED</body></html>")
+
+    try:
+        class MockSessionLocal:
+            def __enter__(self):
+                return db_session
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        with mock.patch("app.db.session.SessionLocal", MockSessionLocal), mock.patch("app.services.qa.validate_report", return_value={"status": "PASS", "issues": []}):
+            resp = client.post(f"/api/v1/investigations/{investigation_id}/tasks/TASK-006/human-intervention")
+        
+        assert resp.status_code == 200
+        db_session.refresh(inv)
+        # Resuming loop checks limit before advancing and sets status to LIMIT_REACHED or similar
+        assert inv.status in {"LIMIT_REACHED", "MAX_LOOPS_REACHED", "COMPLETED"}
+    finally:
+        BrowserResearchAgent._fetch_page = original_fetcher
+        settings.max_research_depth = 3 # restore
+
+

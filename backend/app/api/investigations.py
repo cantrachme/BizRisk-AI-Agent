@@ -477,6 +477,166 @@ def resume_investigation(
     }
 
 
+@router.get("/{investigation_id}/events/stream")
+async def stream_investigation_events(
+    investigation_id: str,
+    once: bool = False,
+    db: Session = Depends(get_db),
+):
+    from fastapi.responses import StreamingResponse
+    import asyncio
+    import json
+    import uuid
+    from app.models.investigation import Investigation as InvestigationModel
+    from app.models.investigation_event import InvestigationEvent as InvestigationEventModel
+
+    try:
+        inv_uuid = uuid.UUID(investigation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid investigation UUID")
+
+    investigation = db.query(InvestigationModel).filter(InvestigationModel.id == inv_uuid).first()
+    if not investigation:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+
+    async def event_generator():
+        sent_event_ids = set()
+        while True:
+            events = (
+                db.query(InvestigationEventModel)
+                .filter(InvestigationEventModel.investigation_id == inv_uuid)
+                .order_by(InvestigationEventModel.created_at.asc())
+                .all()
+            )
+            for event in events:
+                if event.id not in sent_event_ids:
+                    sent_event_ids.add(event.id)
+                    event_data = {
+                        "id": str(event.id),
+                        "investigation_id": str(event.investigation_id),
+                        "event_type": event.event_type,
+                        "node": event.node,
+                        "status": event.status,
+                        "metadata": json.loads(event.metadata_json),
+                        "created_at": event.created_at.isoformat() if event.created_at else None,
+                    }
+                    yield f"data: {json.dumps(event_data)}\n\n"
+            
+            if once:
+                break
+
+            db.expire_all()
+            inv = db.query(InvestigationModel).filter(InvestigationModel.id == inv_uuid).first()
+            if inv and inv.status in {"COMPLETED", "FAILED"}:
+                await asyncio.sleep(2)
+                break
+            await asyncio.sleep(1)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.post("/{investigation_id}/tasks/{task_id}/human-intervention")
+def complete_human_intervention(
+    investigation_id: str,
+    task_id: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.models.investigation import Investigation as InvestigationModel
+    from app.models.research_task import ResearchTask as ResearchTaskModel
+    from app.services.audit import record_event
+    import uuid
+
+    try:
+        inv_uuid = uuid.UUID(investigation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid investigation UUID")
+
+    investigation = db.query(InvestigationModel).filter(InvestigationModel.id == inv_uuid).first()
+    if not investigation:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+
+    task = (
+        db.query(ResearchTaskModel)
+        .filter(
+            ResearchTaskModel.investigation_id == inv_uuid,
+            ResearchTaskModel.task_id == task_id,
+        )
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Research task not found")
+
+    if task.status != "HUMAN_INTERVENTION_REQUIRED":
+        return {
+            "status": "success",
+            "message": f"Task is already resumed or completed. Current status: {task.status}",
+            "task_id": task_id,
+        }
+
+    record_event(
+        db,
+        inv_uuid,
+        "HUMAN_ACTION_COMPLETED",
+        "browser",
+        "IN_PROGRESS",
+        {
+            "task_id": task_id,
+            "message": "Human verification completed. Resuming research..."
+        }
+    )
+
+    task.status = "PENDING"
+    task.intervention_type = None
+    task.intervention_reason = None
+    task.started_at = None
+    task.completed_at = None
+
+    other_blocked = (
+        db.query(ResearchTaskModel)
+        .filter(
+            ResearchTaskModel.investigation_id == inv_uuid,
+            ResearchTaskModel.status == "HUMAN_INTERVENTION_REQUIRED",
+        )
+        .first()
+    )
+
+    if not other_blocked:
+        investigation.status = "PENDING_RESEARCH"
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    from app.graph.workflow import app as graph_app
+    from app.services.investigation import recover_investigation_state, serialize_state
+
+    state = recover_investigation_state(db, investigation.id)
+    state["status"] = "PENDING_RESEARCH"
+    state["stop_reason"] = None
+    if state.get("pending_tasks"):
+        for t in state["pending_tasks"]:
+            if t.task_id == task_id:
+                t.status = "PENDING"
+
+    investigation.persistent_graph_state = serialize_state(state)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    graph_app.invoke(state)
+
+    db.refresh(investigation)
+    db.refresh(task)
+    return {
+        "status": "success",
+        "investigation_status": investigation.status,
+        "task_status": task.status,
+    }
+
+
 @router.get("/{investigation_id}/history")
 def get_investigation_history(
     investigation: Investigation = Depends(get_owned_investigation),
@@ -696,5 +856,236 @@ def test_entity_discovery(payload: DiscoveryTestRequest) -> dict:
     from app.agents.discovery import DiscoveryAgent
     agent = DiscoveryAgent()
     return agent.process(payload.model_dump())
+
+
+class PlannerResearchTaskSchema(BaseModel):
+    task_id: str
+    task_type: str
+    target: str
+    objective: str
+    required_fields: list[str]
+    priority: int
+    preferred_sources: list[str] = Field(default_factory=list)
+    fallback_sources: list[str] = Field(default_factory=list)
+    allowed_domains: list[str] | None = None
+    status: str = "PENDING"
+
+
+from typing import Any
+
+
+class PlannerResearchResultSchema(BaseModel):
+    result_id: str
+    task_id: str
+    field_name: str
+    field_value: Any
+    source_name: str
+    source_url: str | None = None
+    retrieved_at: str
+    confidence: float
+    evidence_basis: str | None = None
+
+
+class PlannerTestRequest(BaseModel):
+    pending_tasks: list[PlannerResearchTaskSchema] = Field(default_factory=list)
+    completed_tasks: list[PlannerResearchTaskSchema] = Field(default_factory=list)
+    failed_tasks: list[PlannerResearchTaskSchema] = Field(default_factory=list)
+    results: list[PlannerResearchResultSchema] = Field(default_factory=list)
+    raw_input: dict[str, Any] = Field(default_factory=dict)
+    normalized_input: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlannerTestResponse(BaseModel):
+    new_tasks: list[PlannerResearchTaskSchema]
+
+
+@test_router.post("/test/planner", response_model=PlannerTestResponse)
+def test_planner(payload: PlannerTestRequest) -> dict:
+    from app.agents.planner import PlannerAgent
+    from app.graph.state import ResearchTask as GraphTask, ResearchResult as GraphResult
+    
+    pending_tasks = [GraphTask(**t.model_dump()) for t in payload.pending_tasks]
+    completed_tasks = [GraphTask(**t.model_dump()) for t in payload.completed_tasks]
+    failed_tasks = [GraphTask(**t.model_dump()) for t in payload.failed_tasks]
+    results = [GraphResult(**r.model_dump()) for r in payload.results]
+    
+    state = {
+        "pending_tasks": pending_tasks,
+        "completed_tasks": completed_tasks,
+        "failed_tasks": failed_tasks,
+        "results": results,
+        "raw_input": payload.raw_input,
+        "normalized_input": payload.normalized_input,
+    }
+    
+    agent = PlannerAgent()
+    new_tasks = agent.plan(state)
+    
+    return {"new_tasks": [PlannerResearchTaskSchema(**t.model_dump()) for t in new_tasks]}
+
+
+class BrowserTestRequest(BaseModel):
+    task_id: str
+    task_type: str
+    target: str
+    objective: str
+    required_fields: list[str]
+    priority: int
+    preferred_sources: list[str] = Field(default_factory=list)
+    fallback_sources: list[str] = Field(default_factory=list)
+    allowed_domains: list[str] | None = None
+    status: str = "PENDING"
+
+
+class BrowserTestResult(BaseModel):
+    result_id: str
+    task_id: str
+    field_name: str
+    field_value: Any
+    source_name: str
+    source_url: str | None = None
+    retrieved_at: str
+    confidence: float
+    evidence_basis: str | None = None
+
+
+class BrowserTestResponse(BaseModel):
+    results: list[BrowserTestResult]
+    browser_status: str
+    error: str | None = None
+
+
+@test_router.post("/test/browser-research", response_model=BrowserTestResponse)
+def test_browser_research(payload: BrowserTestRequest) -> dict:
+    from app.agents.browser import BrowserResearchAgent
+    from app.graph.state import ResearchTask as GraphTask
+    from app.core.exceptions import HumanInterventionRequiredException
+    
+    task = GraphTask(**payload.model_dump())
+    agent = BrowserResearchAgent()
+    
+    try:
+        results = agent.execute(task, investigation_id=None)
+        mapped_results = []
+        for r in results:
+            item = r.model_dump()
+            if item.get("field_value") in {"NOT_FOUND", "UNAVAILABLE"}:
+                item["confidence"] = 0.0
+            mapped_results.append(BrowserTestResult(**item))
+            
+        return {
+            "results": mapped_results,
+            "browser_status": "SUCCESS",
+            "error": None
+        }
+    except HumanInterventionRequiredException as e:
+        return {
+            "results": [],
+            "browser_status": "BLOCKED",
+            "error": str(e)
+        }
+    except Exception as e:
+        return {
+            "results": [],
+            "browser_status": "ERROR",
+            "error": str(e)
+        }
+
+
+@router.get("/{investigation_id}/tasks/{task_id}/browser-session")
+def get_task_browser_session(investigation_id: str, task_id: str):
+    import uuid
+    from app.core.browser_session_manager import browser_session_manager
+    try:
+        inv_uuid = uuid.UUID(investigation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid investigation UUID")
+        
+    session = browser_session_manager.get_session(inv_uuid, task_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="No active browser session found for this task")
+        
+    return {
+        "session_id": str(session.id),
+        "status": session.status,
+        "created_at": session.created_at.isoformat(),
+        "last_activity_at": session.last_activity_at.isoformat(),
+        "current_url": session.page.url,
+    }
+
+
+@router.get("/{investigation_id}/tasks/{task_id}/screenshot")
+def get_task_screenshot(investigation_id: str, task_id: str):
+    import uuid
+    from fastapi.responses import Response
+    from app.core.browser_session_manager import browser_session_manager
+    try:
+        inv_uuid = uuid.UUID(investigation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid investigation UUID")
+        
+    session = browser_session_manager.get_session(inv_uuid, task_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="No active browser session found for this task")
+        
+    try:
+        screenshot_bytes = session.page.screenshot(type="png")
+        return Response(content=screenshot_bytes, media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to capture screenshot: {e}")
+
+
+@router.post("/{investigation_id}/tasks/{task_id}/click")
+def post_task_click(investigation_id: str, task_id: str, payload: dict):
+    import uuid
+    from app.core.browser_session_manager import browser_session_manager
+    try:
+        inv_uuid = uuid.UUID(investigation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid investigation UUID")
+        
+    session = browser_session_manager.get_session(inv_uuid, task_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="No active browser session found for this task")
+        
+    x = payload.get("x")
+    y = payload.get("y")
+    if x is None or y is None:
+        raise HTTPException(status_code=400, detail="Click coordinates x and y are required")
+        
+    try:
+        session.page.mouse.click(float(x), float(y))
+        session.touch()
+        return {"status": "success", "message": f"Clicked at ({x}, {y})"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to click: {e}")
+
+
+@router.post("/{investigation_id}/tasks/{task_id}/type")
+def post_task_type(investigation_id: str, task_id: str, payload: dict):
+    import uuid
+    from app.core.browser_session_manager import browser_session_manager
+    try:
+        inv_uuid = uuid.UUID(investigation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid investigation UUID")
+        
+    session = browser_session_manager.get_session(inv_uuid, task_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="No active browser session found for this task")
+        
+    text = payload.get("text")
+    if text is None:
+        raise HTTPException(status_code=400, detail="Text field is required")
+        
+    try:
+        session.page.keyboard.type(str(text))
+        session.touch()
+        return {"status": "success", "message": "Typed text successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to type: {e}")
+
+
+
 
 

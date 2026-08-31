@@ -139,7 +139,8 @@ def test_source_failure_graceful_handling(mock_load, db_session, investigation_i
             pass
 
     # Mock the page fetcher inside BrowserResearchAgent to simulate network failure
-    with patch("app.db.session.SessionLocal", MockSessionLocal), patch("urllib.request.urlopen", side_effect=TimeoutError("Connection timed out")):
+    with patch("app.db.session.SessionLocal", MockSessionLocal), \
+         patch("app.agents.browser.BrowserResearchAgent._fetch_page", side_effect=TimeoutError("Connection timed out")):
         initial_state = {
             "investigation_id": str(investigation_id),
             "raw_input": {

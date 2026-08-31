@@ -31,6 +31,9 @@ jest.mock('../lib/api', () => ({
     resumeInvestigation: jest.fn(),
     getInvestigations: jest.fn(),
     getIncompleteInvestigations: jest.fn(),
+    getEvents: jest.fn().mockResolvedValue([]),
+    getEventsStreamUrl: jest.fn().mockReturnValue('http://localhost:8000/api/v1/investigations/1/events/stream'),
+    completeHumanIntervention: jest.fn(),
   },
   APIError: class extends Error {
     status: number;
