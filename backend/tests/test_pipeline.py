@@ -19,7 +19,35 @@ def test_pipeline_normalizes_discovers_plans_and_executes_research():
         "status": "CREATED",
     }
 
-    output = graph_app.invoke(state)
+    # Mock _fetch_page to return valid mocked HTML responses for both GST and website verification
+    from unittest import mock
+    def mock_fetcher(url: str) -> str:
+        url_lower = url.lower()
+        if "gst.gov.in" in url_lower:
+            return """
+            <html>
+              <head><title>GST Details</title></head>
+              <body>
+                <div>GSTIN: 27ABCDE1234F1Z5</div>
+                <div>Legal Name: ABC FOODS PRIVATE LIMITED</div>
+                <div>GST status: Active</div>
+                <div>Registered Address: Noida, UP</div>
+              </body>
+            </html>
+            """
+        else:
+            return """
+            <html>
+              <head><title>ABC Foods Website</title></head>
+              <body>
+                <h1>ABC Foods Private Limited Noida</h1>
+                <p>Welcome to our official website</p>
+              </body>
+            </html>
+            """
+
+    with mock.patch("app.agents.browser.BrowserResearchAgent._fetch_page", side_effect=mock_fetcher):
+        output = graph_app.invoke(state)
 
     assert output["normalized_input"]["business_name"] == "ABC FOODS PVT LTD"
     assert output["normalized_input"]["gstin"] == "27ABCDE1234F1Z5"

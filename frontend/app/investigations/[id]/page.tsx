@@ -38,6 +38,12 @@ export default function InvestigationPage() {
   const [reports, setReports] = useState<HistoricalReport[]>([]);
   const [selectedReportIdx, setSelectedReportIdx] = useState<number>(0);
   const [hitl, setHitl] = useState<HumanInterventionStatus | null>(null);
+  const [events, setEvents] = useState<any[]>([]);
+  const [taskResumeLoading, setTaskResumeLoading] = useState<Record<string, boolean>>({});
+  const [screenshotRefresh, setScreenshotRefresh] = useState<Record<string, number>>({});
+  const [typeTexts, setTypeTexts] = useState<Record<string, string>>({});
+  const [interactionLoading, setInteractionLoading] = useState<Record<string, boolean>>({});
+  const [activeSessions, setActiveSessions] = useState<Record<string, boolean>>({});
   
   const [loading, setLoading] = useState(true);
   const [polling, setPolling] = useState(false);
@@ -46,6 +52,86 @@ export default function InvestigationPage() {
   const [pipelineCollapsed, setPipelineCollapsed] = useState(true);
   
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const checkBrowserSession = async (taskId: string) => {
+    try {
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const res = await fetch(`${API_URL}/api/v1/investigations/${id}/tasks/${taskId}/browser-session`);
+      if (res.ok) {
+        setActiveSessions(prev => ({ ...prev, [taskId]: true }));
+      } else {
+        setActiveSessions(prev => ({ ...prev, [taskId]: false }));
+      }
+    } catch {
+      setActiveSessions(prev => ({ ...prev, [taskId]: false }));
+    }
+  };
+
+  const handleScreenshotClick = async (taskId: string, e: React.MouseEvent<HTMLImageElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickX = ((e.clientX - rect.left) / rect.width) * 1000;
+    const clickY = ((e.clientY - rect.top) / rect.height) * 700;
+
+    setInteractionLoading(prev => ({ ...prev, [taskId]: true }));
+    try {
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const res = await fetch(`${API_URL}/api/v1/investigations/${id}/tasks/${taskId}/click`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ x: clickX, y: clickY }),
+      });
+      if (res.ok) {
+        setScreenshotRefresh(prev => ({ ...prev, [taskId]: Date.now() }));
+      }
+    } catch (err) {
+      console.error("Click failed:", err);
+    } finally {
+      setInteractionLoading(prev => ({ ...prev, [taskId]: false }));
+    }
+  };
+
+  const handleTypeText = async (taskId: string) => {
+    const text = typeTexts[taskId] || '';
+    if (!text) return;
+
+    setInteractionLoading(prev => ({ ...prev, [taskId]: true }));
+    try {
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const res = await fetch(`${API_URL}/api/v1/investigations/${id}/tasks/${taskId}/type`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (res.ok) {
+        setTypeTexts(prev => ({ ...prev, [taskId]: '' }));
+        setScreenshotRefresh(prev => ({ ...prev, [taskId]: Date.now() }));
+      }
+    } catch (err) {
+      console.error("Typing failed:", err);
+    } finally {
+      setInteractionLoading(prev => ({ ...prev, [taskId]: false }));
+    }
+  };
+
+  const handleRefreshScreenshot = (taskId: string) => {
+    setScreenshotRefresh(prev => ({ ...prev, [taskId]: Date.now() }));
+  };
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    if (detail?.status === 'WAITING_FOR_USER' && hitl?.pending_tasks) {
+      interval = setInterval(() => {
+        hitl.pending_tasks.forEach(task => {
+          if (activeSessions[task.task_id]) {
+            setScreenshotRefresh(prev => ({ ...prev, [task.task_id]: Date.now() }));
+          }
+        });
+      }, 2000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [detail?.status, hitl?.pending_tasks, activeSessions]);
 
   // 1. Single Fetch function for all investigation data
   const fetchData = async (isPoll = false) => {
@@ -57,12 +143,14 @@ export default function InvestigationPage() {
       setDetail(detailData);
 
       // Fetch supplementary components in parallel
-      const [evData, reportsData] = await Promise.all([
+      const [evData, reportsData, evs] = await Promise.all([
         api.getEvidence(id).catch(() => [] as EvidenceItem[]),
         api.getReports(id).catch(() => [] as HistoricalReport[]),
+        api.getEvents(id).catch(() => [] as any[]),
       ]);
 
       setEvidence(evData);
+      setEvents(evs);
       
       if (reportsData.length > 0) {
         setReports(reportsData);
@@ -74,6 +162,11 @@ export default function InvestigationPage() {
       if (detailData.status === 'WAITING_FOR_USER') {
         const hitlData = await api.getHumanIntervention(id).catch(() => null);
         setHitl(hitlData);
+        if (hitlData && hitlData.pending_tasks) {
+          hitlData.pending_tasks.forEach((task: any) => {
+            checkBrowserSession(task.task_id);
+          });
+        }
       } else {
         setHitl(null);
       }
@@ -127,7 +220,43 @@ export default function InvestigationPage() {
     };
   }, [polling]);
 
-  // 3. Trigger Resume action
+  // Real-time EventSource listener
+  useEffect(() => {
+    if (!id) return;
+    if (typeof window === 'undefined' || typeof EventSource === 'undefined') return;
+
+    const streamUrl = api.getEventsStreamUrl(id);
+    const eventSource = new EventSource(streamUrl);
+
+    eventSource.onmessage = (event) => {
+      try {
+        const parsed = JSON.parse(event.data);
+        setEvents((prev) => {
+          if (prev.some((e) => e.id === parsed.id)) {
+            return prev;
+          }
+          return [...prev, parsed];
+        });
+        
+        if (["TASK_COMPLETED", "TASK_BLOCKED", "TASK_FAILED", "WAITING_FOR_HUMAN", "HUMAN_ACTION_COMPLETED"].includes(parsed.event_type)) {
+          fetchData(true);
+        }
+      } catch (err) {
+        console.error("Error parsing EventSource message:", err);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.error("EventSource connection error:", err);
+      eventSource.close();
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, [id]);
+
+  // 3. Trigger Resume action for entire investigation
   const handleResume = async () => {
     try {
       setResumeLoading(true);
@@ -143,6 +272,24 @@ export default function InvestigationPage() {
       }
     } finally {
       setResumeLoading(false);
+    }
+  };
+
+  // 4. Task-level human intervention completion
+  const handleTaskResume = async (taskId: string) => {
+    try {
+      setTaskResumeLoading(prev => ({ ...prev, [taskId]: true }));
+      setError('');
+      await api.completeHumanIntervention(id, taskId);
+      await fetchData(); // Force immediate reload
+    } catch (err) {
+      if (err instanceof APIError) {
+        setError(err.message);
+      } else {
+        setError('Failed to complete verification task.');
+      }
+    } finally {
+      setTaskResumeLoading(prev => ({ ...prev, [taskId]: false }));
     }
   };
 
@@ -332,25 +479,105 @@ export default function InvestigationPage() {
           <div style={hitlHeaderStyle}>
             <span style={hitlIconStyle}>⚠️</span>
             <div>
-              <h3 style={hitlTitleStyle}>Action Required: Human Intervention Triggered</h3>
-              <p style={hitlDescStyle}>The automated browser crawler encountered a restriction and is paused waiting for bypass.</p>
+              <h3 style={hitlTitleStyle}>Action Required: Human Verification Required</h3>
+              <p style={hitlDescStyle}>The automated browser crawler is currently waiting for human verification input.</p>
             </div>
           </div>
           <div style={hitlBodyStyle}>
             {hitl.pending_tasks.map((task) => (
-              <div key={task.id} style={hitlTaskCardStyle}>
+              <div key={task.id} style={{ ...hitlTaskCardStyle, borderBottom: '1px solid rgba(255, 255, 255, 0.05)', paddingBottom: '16px', marginBottom: '16px' }}>
                 <div style={hitlTaskMetaStyle}>
                   <span>Task: <strong>{task.task_type}</strong></span>
                   <span>Type: <strong style={{ color: '#f59e0b' }}>{task.intervention_type}</strong></span>
                 </div>
-                <p style={hitlTaskReasonStyle}><strong>Reason:</strong> {task.intervention_reason || 'Manual verification page loaded.'}</p>
+                <p style={hitlTaskReasonStyle}><strong>Reason:</strong> {task.intervention_reason || 'Manual verification challenge (e.g. CAPTCHA) detected.'}</p>
                 <p style={hitlTaskReasonStyle}><strong>Objective:</strong> {task.objective}</p>
+                
+                {/* Visual live browser panel */}
+                {activeSessions[task.task_id] && (
+                  <div style={{ marginTop: '16px', background: '#111', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px', marginBottom: '16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 'bold' }}>
+                        🔴 LIVE BROWSER SESSION VIEW (Click Screenshot to Click inside Browser)
+                      </span>
+                      <button
+                        onClick={() => handleRefreshScreenshot(task.task_id)}
+                        style={{ background: 'transparent', color: '#ccc', border: '1px solid #444', borderRadius: '4px', padding: '2px 8px', fontSize: '10px', cursor: 'pointer' }}
+                      >
+                        Refresh Image
+                      </button>
+                    </div>
+                    
+                    <div style={{ position: 'relative', overflow: 'hidden', borderRadius: '4px', background: '#000', cursor: 'crosshair', maxWidth: '600px', border: '1px solid #222' }}>
+                      <img
+                        src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/investigations/${id}/tasks/${task.task_id}/screenshot?cb=${screenshotRefresh[task.task_id] || 0}`}
+                        alt="Live Browser Session"
+                        onClick={(e) => handleScreenshotClick(task.task_id, e)}
+                        style={{ width: '100%', height: 'auto', display: 'block', opacity: interactionLoading[task.task_id] ? 0.6 : 1 }}
+                      />
+                      {interactionLoading[task.task_id] && (
+                        <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', background: 'rgba(0,0,0,0.8)', color: '#fff', padding: '8px 16px', borderRadius: '4px', fontSize: '11px' }}>
+                          Processing interaction...
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div style={{ marginTop: '10px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <input
+                        type="text"
+                        placeholder="Type text to send to browser..."
+                        value={typeTexts[task.task_id] || ''}
+                        onChange={(e) => setTypeTexts(prev => ({ ...prev, [task.task_id]: e.target.value }))}
+                        style={{ flex: 1, background: '#222', color: '#fff', border: '1px solid #444', borderRadius: '4px', padding: '6px 10px', fontSize: '11px' }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handleTypeText(task.task_id);
+                          }
+                        }}
+                      />
+                      <button
+                        onClick={() => handleTypeText(task.task_id)}
+                        style={{ background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '4px', padding: '6px 12px', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer' }}
+                      >
+                        Send Keystrokes
+                      </button>
+                    </div>
+                  </div>
+                )}
+                
+                <div style={{ marginTop: '14px', display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button 
+                    onClick={() => handleTaskResume(task.task_id)}
+                    disabled={taskResumeLoading[task.task_id]}
+                    style={{
+                      background: '#10b981',
+                      color: '#000',
+                      border: 'none',
+                      borderRadius: '6px',
+                      padding: '8px 16px',
+                      fontSize: '12px',
+                      fontWeight: 'bold',
+                      cursor: 'pointer',
+                      opacity: taskResumeLoading[task.task_id] ? 0.7 : 1,
+                    }}
+                  >
+                    {taskResumeLoading[task.task_id] ? 'Resuming Browser Task...' : '✓ Complete Verification'}
+                  </button>
+                  <span style={{ fontSize: '12px', color: 'var(--foreground-muted)' }}>
+                    {taskResumeLoading[task.task_id] 
+                      ? 'Browser resumed. Extracting evidence...'
+                      : 'Interact with the browser session above, then click complete to resume browser research.'}
+                  </span>
+                </div>
               </div>
             ))}
           </div>
-          <div style={hitlActionsContainerStyle}>
-            <button onClick={handleResume} disabled={resumeLoading} style={resumeButtonStyle}>
-              {resumeLoading ? 'Initiating pipeline recovery...' : 'Resume Investigation Graph'}
+          <div style={{ ...hitlActionsContainerStyle, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '12px', marginTop: '4px' }}>
+            <span style={{ fontSize: '11px', color: 'var(--foreground-muted)' }}>
+              Or you can force a full graph resumption (tries all tasks):
+            </span>
+            <button onClick={handleResume} disabled={resumeLoading} style={{ ...resumeButtonStyle, marginLeft: '12px', padding: '6px 12px', fontSize: '11px' }}>
+              {resumeLoading ? 'Initiating pipeline recovery...' : 'Force Full Resume'}
             </button>
           </div>
         </div>
@@ -567,6 +794,99 @@ export default function InvestigationPage() {
                 )}
               </div>
             )}
+
+            {/* Real-time Research Activity Timeline */}
+            <div style={{
+              marginTop: '20px',
+              borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+              paddingTop: '16px',
+            }}>
+              <h4 style={{ margin: '0 0 12px 0', fontSize: '13px', color: '#fff', fontWeight: 'bold' }}>Research Activity Timeline</h4>
+              
+              {events.length === 0 ? (
+                <p style={{ fontSize: '12px', color: 'var(--foreground-muted)', margin: 0 }}>No timeline events recorded yet.</p>
+              ) : (
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                  maxHeight: '300px',
+                  overflowY: 'auto',
+                  paddingLeft: '4px',
+                }}>
+                  {events.map((evt, idx) => {
+                    const isErr = ["EVIDENCE_REJECTED", "TASK_FAILED", "TASK_BLOCKED", "CAPTCHA_DETECTED"].includes(evt.event_type);
+                    const isSuccess = ["TASK_COMPLETED", "EVIDENCE_FOUND", "HUMAN_ACTION_COMPLETED", "PAGE_LOADED"].includes(evt.event_type);
+                    const isPending = ["TASK_STARTED", "WAITING_FOR_HUMAN", "HUMAN_ACTION_REQUIRED"].includes(evt.event_type);
+                    
+                    const markerColor = isSuccess ? '#10b981' : isErr ? '#ef4444' : isPending ? '#f59e0b' : '#3b82f6';
+                    const markerIcon = isSuccess ? '✓' : isErr ? '⚠' : isPending ? '⏸' : '▶';
+
+                    const timestampStr = evt.created_at ? new Date(evt.created_at).toLocaleTimeString() : '';
+
+                    return (
+                      <div key={evt.id || idx} style={{
+                        display: 'flex',
+                        gap: '12px',
+                        fontSize: '12px',
+                        position: 'relative',
+                      }}>
+                        {idx < events.length - 1 && (
+                          <div style={{
+                            position: 'absolute',
+                            left: '10px',
+                            top: '20px',
+                            bottom: '-12px',
+                            width: '2px',
+                            background: 'rgba(255, 255, 255, 0.06)',
+                          }} />
+                        )}
+                        
+                        <span style={{
+                          width: '20px',
+                          height: '20px',
+                          borderRadius: '50%',
+                          background: markerColor,
+                          color: '#000',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '10px',
+                          fontWeight: 'bold',
+                          zIndex: 1,
+                          flexShrink: 0,
+                        }}>
+                          {markerIcon}
+                        </span>
+                        
+                        <div style={{ flexGrow: 1 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <strong style={{ color: '#fff', fontSize: '11px' }}>{evt.event_type.replace(/_/g, ' ')}</strong>
+                            {timestampStr && <span style={{ color: 'var(--foreground-muted)', fontSize: '10px' }}>{timestampStr}</span>}
+                          </div>
+                          <p style={{ margin: '2px 0 0 0', color: 'var(--foreground-muted)', fontSize: '11px' }}>
+                            {evt.metadata?.message || evt.metadata_json || 'Research node executing...'}
+                          </p>
+                          {evt.metadata?.source_name && (
+                            <span style={{
+                              display: 'inline-block',
+                              marginTop: '4px',
+                              background: 'rgba(255, 255, 255, 0.04)',
+                              border: '1px solid rgba(255, 255, 255, 0.06)',
+                              borderRadius: '4px',
+                              padding: '2px 6px',
+                              fontSize: '10px',
+                            }}>
+                              Source: {evt.metadata.source_name}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Discovered Entities */}

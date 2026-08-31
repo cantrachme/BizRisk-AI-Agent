@@ -145,7 +145,7 @@ def test_fetch_failure_returns_fallback_results():
 
     assert len(results) == 2
     assert results[0].source_name == "GST Portal"
-    assert results[0].field_value == task.target
+    assert results[0].field_value == "NOT_FOUND"
     assert results[1].field_value == "UNAVAILABLE"
 
 

@@ -69,9 +69,9 @@ def test_browser_fetch_failure_fallback():
     results = agent.execute(task)
     
     assert len(results) == 2
-    # When page fetch fails, legal_name defaults to task target and gst_status defaults to UNAVAILABLE
+    # When page fetch fails, legal_name defaults to NOT_FOUND and gst_status defaults to UNAVAILABLE
     assert results[0].field_name == "legal_name"
-    assert results[0].field_value == "27ABCDE1234F1Z5"
+    assert results[0].field_value == "NOT_FOUND"
     assert results[1].field_name == "gst_status"
     assert results[1].field_value == "UNAVAILABLE"
 

@@ -22,6 +22,7 @@ class ResearchResult(BaseModel):
     source_url: Optional[str] = None
     retrieved_at: str
     confidence: float
+    evidence_basis: Optional[str] = None
 
 class InvestigationState(TypedDict):
     investigation_id: str

@@ -109,5 +109,16 @@ export const api = {
   // Resume Investigation
   resumeInvestigation: (id: string) => request<{ id: string; status: string }>(`/investigations/${id}/resume`, {
     method: 'POST',
+  }),
+
+  // Get Events List
+  getEvents: (id: string) => request<any[]>(`/investigations/${id}/events`),
+
+  // Get Events stream URL helper
+  getEventsStreamUrl: (id: string) => `${API_BASE_URL}/investigations/${id}/events/stream`,
+
+  // Complete Human Intervention on Task
+  completeHumanIntervention: (investigationId: string, taskId: string) => request<{ status: string; investigation_status: string; task_status: string }>(`/investigations/${investigationId}/tasks/${taskId}/human-intervention`, {
+    method: 'POST',
   })
 };

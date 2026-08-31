@@ -45,7 +45,7 @@ def test_browser_no_results_handling():
     results = agent.execute(task)
 
     assert len(results) == 2
-    assert results[0].field_value == "27ABCDE1234F1Z5"  # Fallback to task target
+    assert results[0].field_value == "NOT_FOUND"  # Reject target fallback
     assert results[1].field_value == "UNAVAILABLE"
 
 
@@ -78,7 +78,7 @@ def test_browser_timeout_and_network_failure_handling():
     results = agent.execute(task)
 
     assert len(results) == 2
-    assert results[0].field_value == task.target
+    assert results[0].field_value == "NOT_FOUND"
     assert results[1].field_value == "UNAVAILABLE"
 
 
@@ -91,7 +91,7 @@ def test_browser_partial_data_handling():
     results = agent.execute(task)
 
     assert len(results) == 3
-    assert results[0].field_value == task.target
+    assert results[0].field_value == "NOT_FOUND"
     assert results[1].field_value == "AVAILABLE"
     assert results[2].field_value is None
 

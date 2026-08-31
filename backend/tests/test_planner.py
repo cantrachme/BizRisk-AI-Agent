@@ -75,8 +75,21 @@ def test_state_updates_in_langgraph_flow():
         "status": "CREATED"
     }
 
-    # Run the compiled LangGraph workflow
-    output_state = graph_app.invoke(initial_state)
+    # Run the compiled LangGraph workflow with mocked fetcher to ensure success path
+    from unittest import mock
+    mock_html = """
+    <html>
+      <head><title>GST Status</title></head>
+      <body>
+        <div>GSTIN: 09ABCDE1234F1Z5</div>
+        <div>Legal Name: Test Acme Business</div>
+        <div>GST status: Active</div>
+        <div>Registered Address: 123 Street, Delhi</div>
+      </body>
+    </html>
+    """
+    with mock.patch("app.agents.browser.BrowserResearchAgent._fetch_page", return_value=mock_html):
+        output_state = graph_app.invoke(initial_state)
 
     # The full graph now executes:
     # Intake -> Discovery -> Planner -> Browser -> Entity Resolution -> END
