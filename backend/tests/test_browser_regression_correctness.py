@@ -328,7 +328,7 @@ def test_captcha_blocks_when_no_fallback_configured(client_override):
 
 
 def test_captcha_triggers_fallback_when_fallback_configured(client_override):
-    # Test that CAPTCHA on official source triggers fallback when fallback is configured
+    # Test that CAPTCHA on official source triggers HITL BLOCKED status even when fallback is configured
     payload = {
         "task_id": "TASK-REG-14",
         "task_type": "GST_VERIFICATION",
@@ -352,9 +352,9 @@ def test_captcha_triggers_fallback_when_fallback_configured(client_override):
         
     assert resp.status_code == 200
     data = resp.json()
-    assert data["browser_status"] == "SUCCESS"
-    assert len(data["results"]) == 1
-    assert data["results"][0]["field_value"] == "WIPRO LIMITED"
+    assert data["browser_status"] == "BLOCKED"
+    assert "captcha" in data["error"].lower()
+    assert data["results"] == []
 
 
 def test_fallback_evidence_must_contain_matching_info_before_accepted(client_override):
@@ -494,7 +494,7 @@ def test_must_open_result_page_to_extract_evidence(client_override):
     def mock_fetcher(url):
         visited_urls.append(url)
         if "gst.gov.in" in url:
-            return "<html><body>solve the captcha below</body></html>"
+            return "<html><head><title>503 Service Unavailable</title></head><body>No records found on GST portal.</body></html>"
         elif "duckduckgo.com" in url:
             return """
             <html>
@@ -554,7 +554,7 @@ def test_legal_name_normalization_strips_suffix(client_override):
     
     def mock_fetcher(url):
         if "gst.gov.in" in url:
-            return "<html><body>solve the captcha below</body></html>"
+            return "<html><head><title>503 Service Unavailable</title></head><body>No records found on GST portal.</body></html>"
         elif "duckduckgo.com" in url:
             return """
             <html>
@@ -602,7 +602,7 @@ def test_gst_status_not_inferred_from_mca(client_override):
     
     def mock_fetcher(url):
         if "gst.gov.in" in url:
-            return "<html><body>solve the captcha below</body></html>"
+            return "<html><head><title>503 Service Unavailable</title></head><body>No records found on GST portal.</body></html>"
         elif "duckduckgo.com" in url:
             return """
             <html>

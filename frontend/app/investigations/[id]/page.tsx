@@ -934,25 +934,41 @@ export default function InvestigationPage() {
             ) : (
               <div style={evidenceListStyle}>
                 {evidence.filter(ev => ev.field_name !== 'candidate_entities').map((ev) => {
-                  const isBlocked = ev.confidence === 0.0 || 
-                                    ev.field_value === 'UNAVAILABLE' || 
-                                    ev.field_value === '' || 
-                                    ev.field_value === '{"title": null, "text": ""}';
+                  const valStr = String(ev.field_value || '').trim().toUpperCase();
+                  const isCaptcha = valStr.includes('CAPTCHA') || ev.field_name.toUpperCase().includes('CAPTCHA');
+                  const isBlocked = valStr === 'BLOCKED' || valStr === 'SOURCE_UNAVAILABLE' || valStr === 'TIMEOUT';
+                  const isNotFound = valStr === 'NOT_FOUND' || valStr === 'NONE';
+                  const isUnavailable = isBlocked || isNotFound || valStr === 'UNAVAILABLE' || valStr === '' || valStr === '{"TITLE": NULL, "TEXT": ""}';
+                  const isVerified = ev.confidence >= 0.70 && !isUnavailable;
+                  const isLowConfidence = !isUnavailable && !isVerified;
                   
-                  const isLowConfidence = !isBlocked && ev.confidence > 0.0 && ev.confidence < 0.50;
-                  
-                  let statusTagText = '✓ VERIFIED EVIDENCE';
+                  let statusTagText = '✓ VERIFIED';
                   let cardBorderColor = 'rgba(52, 211, 153, 0.2)';
                   let cardBgColor = 'rgba(52, 211, 153, 0.01)';
                   let statusTagColor = '#34d399';
 
-                  if (isBlocked) {
-                    statusTagText = '⚠ UNAVAILABLE SOURCE';
+                  if (isCaptcha) {
+                    statusTagText = '⚠ CAPTCHA REQUIRED';
+                    cardBorderColor = 'rgba(245, 158, 11, 0.3)';
+                    cardBgColor = 'rgba(245, 158, 11, 0.02)';
+                    statusTagColor = '#f59e0b';
+                  } else if (isBlocked) {
+                    statusTagText = '⚠ BLOCKED';
+                    cardBorderColor = 'rgba(239, 68, 68, 0.2)';
+                    cardBgColor = 'rgba(239, 68, 68, 0.01)';
+                    statusTagColor = '#f87171';
+                  } else if (isNotFound) {
+                    statusTagText = 'ℹ NOT FOUND';
+                    cardBorderColor = 'rgba(148, 163, 184, 0.2)';
+                    cardBgColor = 'rgba(148, 163, 184, 0.01)';
+                    statusTagColor = '#94a3b8';
+                  } else if (isUnavailable) {
+                    statusTagText = '⚠ UNAVAILABLE';
                     cardBorderColor = 'rgba(239, 68, 68, 0.2)';
                     cardBgColor = 'rgba(239, 68, 68, 0.01)';
                     statusTagColor = '#f87171';
                   } else if (isLowConfidence) {
-                    statusTagText = '⚠ LOW CONFIDENCE';
+                    statusTagText = '⚠ UNVERIFIED / LOW CONFIDENCE';
                     cardBorderColor = 'rgba(245, 158, 11, 0.2)';
                     cardBgColor = 'rgba(245, 158, 11, 0.01)';
                     statusTagColor = '#f59e0b';
@@ -960,8 +976,8 @@ export default function InvestigationPage() {
 
                   // Human-readable formatting of the field value
                   let displayValue = ev.field_value;
-                  if (isBlocked) {
-                    displayValue = 'This information was unavailable from the source (blocked, empty, or connection failed).';
+                  if (isUnavailable) {
+                    displayValue = `Source status: ${valStr || 'UNAVAILABLE'} (connection inaccessible or record not present).`;
                   } else if (displayValue && (displayValue.startsWith('{') || displayValue.startsWith('['))) {
                     try {
                       const parsed = JSON.parse(displayValue);
@@ -1002,10 +1018,10 @@ export default function InvestigationPage() {
                       </div>
                       <div style={{
                         fontSize: '14px',
-                        color: isBlocked ? 'var(--foreground-muted)' : '#fff',
-                        fontStyle: isBlocked ? 'italic' : 'normal',
+                        color: isUnavailable ? 'var(--foreground-muted)' : '#fff',
+                        fontStyle: isUnavailable ? 'italic' : 'normal',
                         whiteSpace: 'pre-wrap',
-                        fontFamily: isBlocked ? 'inherit' : 'monospace',
+                        fontFamily: isUnavailable ? 'inherit' : 'monospace',
                         lineHeight: '1.4',
                       }}>{displayValue}</div>
                       <div style={evidenceMetaGridStyle}>
@@ -1177,28 +1193,152 @@ export default function InvestigationPage() {
                 <div style={reportContentStyle}>
                   <h4 style={reportSecHeaderStyle}>Executive Summary</h4>
                   <div style={reportTextCardStyle}>
-                    <p>{reports[selectedReportIdx].report.recommendation || 'No recommendation available.'}</p>
+                    <p style={{ margin: 0, lineHeight: '1.5' }}>
+                      {reports[selectedReportIdx].report.recommendation || 'Based on available public evidence, no recommendation available.'}
+                    </p>
                   </div>
 
-                  <h4 style={reportSecHeaderStyle}>Findings Detail</h4>
-                  <div style={reportFindingsListStyle}>
-                    {(reports[selectedReportIdx].report.major_findings as unknown as FindingItem[] | undefined)?.map((finding: FindingItem, idx: number) => (
-                      <div key={idx} style={findingCardStyle}>
-                        <div style={findingCardHeaderStyle}>
-                          <strong>{finding.code}</strong>
-                          <span>Confidence: {((finding.confidence || 0) * 100).toFixed(0)}%</span>
-                        </div>
-                        <p style={findingDescStyle}>{finding.description}</p>
-                        {finding.evidence_ids && finding.evidence_ids.length > 0 && (
-                          <div style={findingEvidenceListStyle}>
-                            <span>Evidence link:</span>
-                            {finding.evidence_ids.map((eid: string) => (
-                              <code key={eid} style={evidenceTagStyle}>{eid}</code>
-                            ))}
-                          </div>
-                        )}
+                  {/* Verification Summary Per Registry */}
+                  {reports[selectedReportIdx].report.verification_summary && (
+                    <div style={{ marginTop: '20px' }}>
+                      <h4 style={reportSecHeaderStyle}>Registry Verification Summary</h4>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+                        {Object.entries(reports[selectedReportIdx].report.verification_summary).map(([srcKey, sData]: [string, any]) => {
+                          const isV = sData.status === 'VERIFIED';
+                          const isC = sData.status === 'CAPTCHA_REQUIRED';
+                          const isB = sData.status === 'BLOCKED';
+                          const isN = sData.status === 'NOT_FOUND';
+                          const sColor = isV ? '#34d399' : isC ? '#f59e0b' : isB ? '#f87171' : isN ? '#94a3b8' : '#e2e8f0';
+                          const sBadge = isV ? '✓ VERIFIED' : isC ? '⚠ CAPTCHA' : isB ? '⚠ BLOCKED' : isN ? 'ℹ NOT FOUND' : 'UNAVAILABLE';
+                          
+                          const label = srcKey === 'gst' ? 'GST Portal' 
+                                      : srcKey === 'mca' ? 'MCA Registry' 
+                                      : srcKey === 'epfo' ? 'EPFO Portal'
+                                      : srcKey === 'official_website' ? 'Official Website'
+                                      : srcKey === 'third_party' ? 'Third-Party Sources'
+                                      : 'General Web';
+
+                          return (
+                            <div key={srcKey} style={{
+                              padding: '12px',
+                              borderRadius: '8px',
+                              background: 'rgba(255, 255, 255, 0.02)',
+                              border: `1px solid ${sColor}33`,
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '6px'
+                            }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <strong style={{ fontSize: '12px', color: '#fff' }}>{label}</strong>
+                                <span style={{ fontSize: '10px', fontWeight: '700', color: sColor, padding: '1px 6px', borderRadius: '4px', background: `${sColor}1a` }}>{sBadge}</span>
+                              </div>
+                              <p style={{ margin: 0, fontSize: '11px', color: 'var(--foreground-muted)', lineHeight: '1.3' }}>{sData.details}</p>
+                            </div>
+                          );
+                        })}
                       </div>
-                    ))}
+                    </div>
+                  )}
+
+                  {/* Cross-Source Consistency Reconciliation Table */}
+                  {reports[selectedReportIdx].report.cross_source_consistency && (
+                    <div style={{ marginTop: '20px' }}>
+                      <h4 style={reportSecHeaderStyle}>Cross-Source Consistency Reconciliation</h4>
+                      <div style={{ overflowX: 'auto', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '8px' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
+                          <thead>
+                            <tr style={{ background: 'rgba(255, 255, 255, 0.04)', borderBottom: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                              <th style={{ padding: '10px 12px', color: 'var(--foreground-muted)' }}>Field</th>
+                              <th style={{ padding: '10px 12px', color: 'var(--foreground-muted)' }}>Reconciliation</th>
+                              <th style={{ padding: '10px 12px', color: 'var(--foreground-muted)' }}>Sources & Values</th>
+                              <th style={{ padding: '10px 12px', color: 'var(--foreground-muted)' }}>Analysis</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {reports[selectedReportIdx].report.cross_source_consistency.map((rec: any, idx: number) => {
+                              const isM = rec.status === 'MATCH';
+                              const isP = rec.status === 'PARTIAL_MATCH';
+                              const isC = rec.status === 'CONFLICT';
+                              const rColor = isM ? '#34d399' : isP ? '#38bdf8' : isC ? '#f87171' : '#94a3b8';
+                              const rTag = isM ? '✓ MATCH' : isP ? '≈ PARTIAL' : isC ? '✕ CONFLICT' : '— UNAVAILABLE';
+
+                              return (
+                                <tr key={idx} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                                  <td style={{ padding: '10px 12px', fontWeight: '600', color: '#fff' }}>{rec.field}</td>
+                                  <td style={{ padding: '10px 12px' }}>
+                                    <span style={{ fontSize: '11px', fontWeight: '700', color: rColor, padding: '2px 6px', borderRadius: '4px', background: `${rColor}1a` }}>
+                                      {rTag}
+                                    </span>
+                                  </td>
+                                  <td style={{ padding: '10px 12px', color: '#e2e8f0' }}>
+                                    {rec.sources_compared && rec.sources_compared.length > 0 ? (
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                        {rec.sources_compared.map((sc: any, sIdx: number) => (
+                                          <div key={sIdx} style={{ fontSize: '11px' }}>
+                                            <span style={{ color: 'var(--foreground-muted)' }}>{sc.source}: </span>
+                                            <code style={{ background: 'rgba(255,255,255,0.05)', padding: '1px 4px', borderRadius: '3px' }}>{sc.value}</code>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <span style={{ color: 'var(--foreground-muted)', fontStyle: 'italic' }}>None available</span>
+                                    )}
+                                  </td>
+                                  <td style={{ padding: '10px 12px', color: 'var(--foreground-muted)', fontSize: '11.5px', lineHeight: '1.3' }}>
+                                    {rec.analysis}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Source Limitations & Unverified Information */}
+                  {((reports[selectedReportIdx].report.source_limitations && reports[selectedReportIdx].report.source_limitations.length > 0) ||
+                    (reports[selectedReportIdx].report.unverified_information && reports[selectedReportIdx].report.unverified_information.length > 0)) && (
+                    <div style={{ marginTop: '20px' }}>
+                      <h4 style={reportSecHeaderStyle}>Source Limitations & Unverified Information</h4>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {(reports[selectedReportIdx].report.source_limitations || []).map((lim: any, lIdx: number) => (
+                          <div key={lIdx} style={{ padding: '10px 12px', borderRadius: '6px', background: 'rgba(245, 158, 11, 0.04)', border: '1px solid rgba(245, 158, 11, 0.2)', fontSize: '12px', color: '#f59e0b' }}>
+                            ⚠ <strong>{lim.source}</strong>: {lim.reason || lim.status}
+                          </div>
+                        ))}
+                        {(reports[selectedReportIdx].report.unverified_information || []).map((unv: any, uIdx: number) => (
+                          <div key={uIdx} style={{ padding: '10px 12px', borderRadius: '6px', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid rgba(255, 255, 255, 0.06)', fontSize: '12px', color: 'var(--foreground-muted)' }}>
+                            ℹ Unverified field <strong>{unv.field}</strong> from {unv.source}: <code>{String(unv.value)}</code>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <h4 style={{ ...reportSecHeaderStyle, marginTop: '24px' }}>Findings Detail</h4>
+                  <div style={reportFindingsListStyle}>
+                    {(reports[selectedReportIdx].report.major_findings as unknown as FindingItem[] | undefined)?.length === 0 ? (
+                      <p style={{ fontSize: '12px', color: 'var(--foreground-muted)', margin: '4px 0' }}>No high-risk compliance findings detected.</p>
+                    ) : (
+                      (reports[selectedReportIdx].report.major_findings as unknown as FindingItem[] | undefined)?.map((finding: FindingItem, idx: number) => (
+                        <div key={idx} style={findingCardStyle}>
+                          <div style={findingCardHeaderStyle}>
+                            <strong>{finding.code}</strong>
+                            <span>Confidence: {((finding.confidence || 0) * 100).toFixed(0)}%</span>
+                          </div>
+                          <p style={findingDescStyle}>{finding.description}</p>
+                          {finding.evidence_ids && finding.evidence_ids.length > 0 && (
+                            <div style={findingEvidenceListStyle}>
+                              <span>Evidence link:</span>
+                              {finding.evidence_ids.map((eid: string) => (
+                                <code key={eid} style={evidenceTagStyle}>{eid}</code>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               </div>

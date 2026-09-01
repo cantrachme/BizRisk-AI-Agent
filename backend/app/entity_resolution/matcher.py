@@ -1,6 +1,5 @@
 from app.entity_resolution.normalization import normalize_entity
 
-
 IDENTIFIER_FIELDS = (
     "gstin",
     "cin",
@@ -13,7 +12,6 @@ def find_exact_matches(
     candidates: list[dict],
 ) -> list[dict]:
     normalized_target = normalize_entity(target)
-
     matches = []
 
     for candidate in candidates:

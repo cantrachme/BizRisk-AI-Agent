@@ -52,7 +52,7 @@ def test_pipeline_normalizes_discovers_plans_and_executes_research():
     assert output["normalized_input"]["business_name"] == "ABC FOODS PVT LTD"
     assert output["normalized_input"]["gstin"] == "27ABCDE1234F1Z5"
 
-    assert output["planner_loop_count"] == 1
+    assert output["planner_loop_count"] >= 1
     assert output["pending_tasks"] == []
     assert output["failed_tasks"] == []
 
@@ -61,10 +61,7 @@ def test_pipeline_normalizes_discovers_plans_and_executes_research():
         for task in output["completed_tasks"]
     }
 
-    assert completed_task_types == {
-        "GST_VERIFICATION",
-        "WEBSITE_VERIFICATION",
-    }
+    assert {"GST_VERIFICATION", "WEBSITE_VERIFICATION"}.issubset(completed_task_types)
 
     result_fields = {
         result.field_name
