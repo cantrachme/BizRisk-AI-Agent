@@ -81,25 +81,36 @@ class PlannerAgent:
         target_website = website or discovered_website
         primary_name = discovered_legal_name or business_name
 
-        # Fetch sources from registry
+        # Fetch sources from centralized source registry
+        from app.research.source_registry import source_registry
         from app.db.session import SessionLocal
         from app.services.source_registry import get_preferred_sources
 
-        gst_pref, gst_fall = ["gst.gov.in"], ["third_party"]
-        mca_pref, mca_fall = ["mca.gov.in"], ["third_party"]
-        epfo_pref, epfo_fall = ["epfindia.gov.in"], ["third_party"]
-        web_pref, web_fall = ["company_website"], ["generic_web"]
-        disc_pref, disc_fall = ["generic_web"], []
+        gst_pref, gst_fall = source_registry.get_preferred_and_fallback_sources("GST_VERIFICATION")
+        mca_pref, mca_fall = source_registry.get_preferred_and_fallback_sources("MCA_VERIFICATION")
+        epfo_pref, epfo_fall = source_registry.get_preferred_and_fallback_sources("EPFO_VERIFICATION")
+        web_pref, web_fall = source_registry.get_preferred_and_fallback_sources("WEBSITE_VERIFICATION")
+        disc_pref, disc_fall = source_registry.get_preferred_and_fallback_sources("ENTITY_DISCOVERY")
+        third_party_pref, third_party_fall = source_registry.get_preferred_and_fallback_sources("THIRD_PARTY_RESEARCH")
 
         try:
             with SessionLocal() as db:
-                gst_pref, gst_fall = get_preferred_sources(db, "GST_VERIFICATION")
-                gst_pref = ["gst.gov.in" if x == "GST Portal" else x for x in gst_pref]
-                gst_fall = ["third_party" if x == "Third-Party Source" else x for x in gst_fall]
-                mca_pref, mca_fall = get_preferred_sources(db, "MCA_VERIFICATION")
-                epfo_pref, epfo_fall = get_preferred_sources(db, "EPFO_VERIFICATION")
-                web_pref, web_fall = get_preferred_sources(db, "WEBSITE_VERIFICATION")
-                disc_pref, disc_fall = get_preferred_sources(db, "ENTITY_DISCOVERY")
+                db_gst_pref, db_gst_fall = get_preferred_sources(db, "GST_VERIFICATION")
+                if db_gst_pref:
+                    gst_pref = ["gst.gov.in" if x == "GST Portal" else x for x in db_gst_pref]
+                    gst_fall = ["third_party" if x == "Third-Party Source" else x for x in db_gst_fall]
+                db_mca_pref, db_mca_fall = get_preferred_sources(db, "MCA_VERIFICATION")
+                if db_mca_pref:
+                    mca_pref, mca_fall = db_mca_pref, db_mca_fall
+                db_epfo_pref, db_epfo_fall = get_preferred_sources(db, "EPFO_VERIFICATION")
+                if db_epfo_pref:
+                    epfo_pref, epfo_fall = db_epfo_pref, db_epfo_fall
+                db_web_pref, db_web_fall = get_preferred_sources(db, "WEBSITE_VERIFICATION")
+                if db_web_pref:
+                    web_pref, web_fall = db_web_pref, db_web_fall
+                db_disc_pref, db_disc_fall = get_preferred_sources(db, "ENTITY_DISCOVERY")
+                if db_disc_pref:
+                    disc_pref, disc_fall = db_disc_pref, db_disc_fall
         except Exception:
             pass
 
@@ -236,8 +247,8 @@ class PlannerAgent:
                 objective=f"Search third-party business databases (Zauba Corp, Toffler, etc.) for {target_third_party}.",
                 required_fields=["legal_name", "company_status", "registered_address", "business_activity"],
                 priority=2,
-                preferred_sources=["third_party"],
-                fallback_sources=["generic_web"]
+                preferred_sources=third_party_pref,
+                fallback_sources=third_party_fall
             )
 
         # ----------------------------------------------------

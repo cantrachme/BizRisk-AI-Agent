@@ -15,6 +15,7 @@ class NormalizedEvidence:
         source_url: Optional[str],
         retrieved_at: datetime,
         confidence: float,
+        verification_status: Optional[str] = "UNVERIFIED",
     ):
         self.id = id
         self.task_id = task_id
@@ -24,6 +25,7 @@ class NormalizedEvidence:
         self.source_url = source_url
         self.retrieved_at = retrieved_at
         self.confidence = confidence
+        self.verification_status = verification_status
 
 
 def normalize_evidence(res: Any) -> NormalizedEvidence:
@@ -48,8 +50,9 @@ def normalize_evidence(res: Any) -> NormalizedEvidence:
             pass
 
         confidence = res.confidence
+        verif_status = getattr(res, "verification_status", None) or "UNVERIFIED"
         # Force confidence to 0.0 for failed/not found evidence values
-        if val in ["NOT_FOUND", "UNAVAILABLE"]:
+        if val in ["NOT_FOUND", "UNAVAILABLE"] or verif_status in ["SOURCE_UNAVAILABLE", "NOT_FOUND"]:
             confidence = 0.0
         elif isinstance(val, dict) and str(val.get("text")).strip().upper() == "NOT_FOUND":
             confidence = 0.0
@@ -63,6 +66,7 @@ def normalize_evidence(res: Any) -> NormalizedEvidence:
             source_url=res.source_url,
             retrieved_at=retrieved_dt,
             confidence=confidence,
+            verification_status=verif_status,
         )
     # ResearchResult Pydantic model
     else:
@@ -75,8 +79,9 @@ def normalize_evidence(res: Any) -> NormalizedEvidence:
 
         val = res.field_value
         confidence = res.confidence
+        verif_status = getattr(res, "verification_status", None) or "UNVERIFIED"
         # Force confidence to 0.0 for failed/not found evidence values
-        if val in ["NOT_FOUND", "UNAVAILABLE"]:
+        if val in ["NOT_FOUND", "UNAVAILABLE"] or verif_status in ["SOURCE_UNAVAILABLE", "NOT_FOUND"]:
             confidence = 0.0
         elif isinstance(val, dict) and str(val.get("text")).strip().upper() == "NOT_FOUND":
             confidence = 0.0
@@ -90,6 +95,7 @@ def normalize_evidence(res: Any) -> NormalizedEvidence:
             source_url=res.source_url,
             retrieved_at=retrieved_dt,
             confidence=confidence,
+            verification_status=verif_status,
         )
 
 
