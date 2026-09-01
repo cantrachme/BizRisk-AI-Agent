@@ -126,7 +126,7 @@ def save_research_results(
                 existing_ev.field_value = val_str
                 existing_ev.retrieved_timestamp = retrieved_dt
                 existing_ev.confidence = result.confidence
-                existing_ev.verification_status = "UNVERIFIED"
+                existing_ev.verification_status = result.verification_status or "UNVERIFIED"
                 if task_id_val:
                     existing_ev.research_task_id = task_id_val
                     existing_ev.task_id = result.task_id
@@ -143,7 +143,7 @@ def save_research_results(
                 source_url=result.source_url,
                 retrieved_timestamp=retrieved_dt,
                 confidence=result.confidence,
-                verification_status="UNVERIFIED",
+                verification_status=result.verification_status or "UNVERIFIED",
             )
             db.add(evidence)
             evidences.append(evidence)

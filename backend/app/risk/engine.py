@@ -61,6 +61,17 @@ def calculate_risk_analysis(
             source_name = getattr(ev, "source_name", None)
             if source_name is None and isinstance(ev, dict):
                 source_name = ev.get("source_name")
+            confidence = getattr(ev, "confidence", 0.0)
+            if isinstance(ev, dict):
+                confidence = ev.get("confidence", 0.0)
+            val = getattr(ev, "field_value", None) or (ev.get("field_value") if isinstance(ev, dict) else None)
+            if confidence is None or float(confidence) < 0.5:
+                continue
+            if isinstance(val, str) and val.strip().upper() in {"NOT_FOUND", "UNAVAILABLE"}:
+                continue
+            verif_status = getattr(ev, "verification_status", None) or (ev.get("verification_status") if isinstance(ev, dict) else None)
+            if verif_status in {"SOURCE_UNAVAILABLE", "NOT_FOUND"}:
+                continue
 
             if source_name:
                 if source_name in legal_sources_cfg:
@@ -92,6 +103,12 @@ def calculate_risk_analysis(
         if not str(ev.source_name).strip() or not str(ev.field_name).strip():
             continue
         if not (0.5 <= float(ev.confidence) <= 1.0):
+            continue
+        if ev.field_value in [None, "", [], {}]:
+            continue
+        if isinstance(ev.field_value, str) and ev.field_value.strip().upper() in {"NOT_FOUND", "UNAVAILABLE"}:
+            continue
+        if getattr(ev, "verification_status", None) in {"SOURCE_UNAVAILABLE", "NOT_FOUND"}:
             continue
         seen_ids.add(evidence_id)
         validated_evs.append(ev)
