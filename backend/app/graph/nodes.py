@@ -156,6 +156,7 @@ def intake_node(state: InvestigationState) -> dict:
         normalized_input = IntakeAgent().process(state.get("raw_input") or {})
         ret_val = {
             "normalized_input": normalized_input,
+            "identifier_provenance": normalized_input.get("identifier_provenance"),
             "status": "NORMALIZED",
             "research_depth": 0,
             "browser_actions": 0,
@@ -946,7 +947,17 @@ def entity_resolution_node(state: InvestigationState) -> dict:
 
         for result in results:
             if result.field_name == "candidate_entities":
-                candidates.extend(result.field_value or [])
+                raw_cands = result.field_value
+                if isinstance(raw_cands, list):
+                    for c in raw_cands:
+                        if isinstance(c, dict):
+                            candidates.append(c)
+                        elif isinstance(c, str):
+                            candidates.append({"name": c})
+                elif isinstance(raw_cands, dict):
+                    candidates.append(raw_cands)
+                elif isinstance(raw_cands, str):
+                    candidates.append({"name": raw_cands})
 
         from app.core.caching import ResolvedEntityCache
         cached_res = None
@@ -963,9 +974,18 @@ def entity_resolution_node(state: InvestigationState) -> dict:
             if investigation_id:
                 ResolvedEntityCache.set(investigation_id, normalized_input, resolution)
 
+        entity = resolution.get("entity")
+        if entity is None and normalized_input:
+            entity = dict(normalized_input)
+        elif entity and normalized_input:
+            merged_entity = dict(normalized_input)
+            for k, v in entity.items():
+                if v and str(v).strip().upper() not in {"NOT_FOUND", "UNAVAILABLE", "NONE"}:
+                    merged_entity[k] = v
+            entity = merged_entity
+
         status = "WAITING_FOR_USER" if is_waiting_for_user else ("ENTITY_RESOLVED" if resolution["matched"] else "ENTITY_UNRESOLVED")
         resolved_entity_id = None
-        entity = resolution.get("entity")
         if entity:
             name_val = entity.get("business_name") or entity.get("name")
             if name_val:
@@ -973,7 +993,7 @@ def entity_resolution_node(state: InvestigationState) -> dict:
 
         updated_state = update_state_from_tracking(state)
         updated_state.update({
-            "resolved_entity": resolution["entity"],
+            "resolved_entity": entity,
             "entity_confidence": resolution["confidence"],
             "entity_resolution_status": resolution["match_type"],
             "status": status,
@@ -1175,19 +1195,29 @@ def report_generation_node(state: InvestigationState) -> dict:
                 with SessionLocal() as db:
                     report = generate_investigation_report(db, investigation_id)
         else:
-            # Fallback to local memory-only report generation for non-UUID / dummy IDs in graph tests
             from app.risk.engine import calculate_risk_analysis
-            from app.services.report import generate_recommendation
+            from app.services.report import (
+                generate_recommendation,
+                build_verification_summary,
+                build_cross_source_consistency,
+            )
             results = state.get("results") or []
             analysis = calculate_risk_analysis(results)
+            entity = state.get("resolved_entity") or {}
+            is_insufficient = analysis.get("insufficient_evidence", False) or analysis["overall_risk"]["score"] is None
 
             report = {
-                "entity": state.get("resolved_entity") or {},
+                "entity": entity,
                 "entity_confidence": state.get("entity_confidence") or 0.0,
                 "overall_risk": {
                     "score": analysis["overall_risk"]["score"],
                     "level": analysis["overall_risk"]["level"],
                 },
+                "assessment_status": "INSUFFICIENT_EVIDENCE" if is_insufficient else "COMPLETED",
+                "reason_codes": list(analysis.get("reason_codes") or []),
+                "verification_summary": build_verification_summary(results),
+                "cross_source_consistency": build_cross_source_consistency(results, entity),
+                "source_limitations": [],
                 "category_scores": analysis["category_scores"],
                 "major_findings": [
                     {

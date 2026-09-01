@@ -26,12 +26,6 @@ def should_continue_after_resolution(
     if state.get("stop_reason") or state.get("status") in {"LIMIT_REACHED", "MAX_LOOPS_REACHED", "WAITING_FOR_USER"}:
         return "__end__"
 
-    if state.get("entity_resolution_status") in {
-        "EXACT",
-        "SIMILARITY",
-    }:
-        return "__end__"
-
     from app.core.config import get_settings
     settings = get_settings()
     loop_count = state.get("planner_loop_count", 0)

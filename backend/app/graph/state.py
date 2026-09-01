@@ -11,7 +11,8 @@ class ResearchTask(BaseModel):
     preferred_sources: List[str] = Field(default_factory=list)
     fallback_sources: List[str] = Field(default_factory=list)
     allowed_domains: Optional[List[str]] = Field(default=None)
-    status: str = "PENDING"  # PENDING, COMPLETED, FAILED
+    status: str = "PENDING"  # PENDING, COMPLETED, FAILED, SOURCE_UNAVAILABLE, BLOCKED
+    evidence_status: Optional[str] = None  # COMPLETED_WITH_EVIDENCE, COMPLETED_NO_EVIDENCE, SOURCE_UNAVAILABLE, BLOCKED
 
 class ResearchResult(BaseModel):
     result_id: str
@@ -23,11 +24,15 @@ class ResearchResult(BaseModel):
     retrieved_at: str
     confidence: float
     evidence_basis: Optional[str] = None
+    verification_status: Optional[str] = "UNVERIFIED"  # VERIFIED, UNVERIFIED, NOT_FOUND, SOURCE_UNAVAILABLE, BLOCKED, TIMEOUT, REJECTED
+    authority_tier: Optional[int] = None  # 1 (Govt), 2 (Company), 3 (Reputable Registry), 4 (Discovery), 5 (Unrelated)
+    rejection_reason: Optional[str] = None
 
 class InvestigationState(TypedDict):
     investigation_id: str
     raw_input: Dict[str, Any]
     normalized_input: Dict[str, Any]
+    identifier_provenance: Optional[Dict[str, str]]
     pending_tasks: List[ResearchTask]
     completed_tasks: List[ResearchTask]
     failed_tasks: List[ResearchTask]
@@ -40,6 +45,8 @@ class InvestigationState(TypedDict):
     overall_risk: Optional[Dict[str, Any]]
     category_scores: Optional[Dict[str, Any]]
     risk_signals: Optional[List[Dict[str, Any]]]
+    reason_codes: Optional[List[str]]
+    source_limitations: Optional[List[Dict[str, Any]]]
     report: Optional[Dict[str, Any]]
     qa_result: Optional[Dict[str, Any]]
     qa_loop_count: int

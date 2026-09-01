@@ -22,7 +22,7 @@ def make_state(raw_input):
 def test_workflow_resolves_discovered_entity():
     def mock_fetcher(url):
         if "gst.gov.in" in url:
-            return "<html><body>solve the captcha below</body></html>"
+            return "<html><head><title>503 Service Unavailable</title></head><body>No records found.</body></html>"
         elif "duckduckgo.com" in url:
             return """
             <html>
@@ -61,6 +61,8 @@ def test_workflow_resolves_discovered_entity():
     assert output["entity_confidence"] == 1.0
     assert output["entity_resolution_status"] == "EXACT"
     assert output["status"] in {"ENTITY_RESOLVED", "COMPLETED"}
+
+
 
 
 def test_workflow_handles_unresolved_entity():

@@ -182,19 +182,38 @@ def validate_report(
                             "finding": f"Finding GST inactive contradicts actual GST status evidence: '{ev.field_value}'."
                         })
 
-    # Check B: Entity Verification
+    # Check B: Entity Verification & Identifier Preservation
     entity = report.get("entity") or {}
     entity_confidence = report.get("entity_confidence")
     entity_name = entity.get("business_name") or entity.get("name")
+    is_insufficient = report.get("overall_risk", {}).get("level") == "INSUFFICIENT_EVIDENCE"
 
-    # Entity must be non-empty and confidence >= 0.5 (TRD threshold)
-    if not entity or entity_name is None:
+    raw_input_dict = {}
+    if investigation and investigation.input_data:
+        try:
+            raw_input_dict = json.loads(investigation.input_data)
+        except Exception:
+            pass
+
+    # Verify user-supplied identifiers were not dropped
+    for id_field in ["gstin", "cin", "epfo_code"]:
+        val = raw_input_dict.get(id_field)
+        if val and str(val).strip().lower() not in {"invalid", "none", "null", "n/a", ""}:
+            if not entity.get(id_field):
+                entity_verified = False
+                issues.append({
+                    "type": "WRONG_ENTITY",
+                    "finding": f"User-supplied {id_field.upper()} was dropped from resolved entity."
+                })
+
+    # Entity must have a name
+    if not entity or not entity_name:
         entity_verified = False
         issues.append({
             "type": "WRONG_ENTITY",
             "finding": "Resolved entity information is empty."
         })
-    elif entity_confidence is not None and entity_confidence < 0.5:
+    elif not is_insufficient and entity_confidence is not None and entity_confidence < 0.5:
         entity_verified = False
         issues.append({
             "type": "WRONG_ENTITY",
@@ -213,6 +232,8 @@ def validate_report(
         })
 
     status_str = "PASS" if not issues else "FAIL"
+    import logging
+    logging.getLogger("bizrisk.observability").error(f"[QA_ISSUES_DIAG] {issues}")
 
     # Update persisted report QA status for this specific version being evaluated
     latest_report = (

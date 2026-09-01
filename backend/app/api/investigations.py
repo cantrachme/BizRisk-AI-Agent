@@ -1010,7 +1010,7 @@ def get_task_browser_session(investigation_id: str, task_id: str):
         "status": session.status,
         "created_at": session.created_at.isoformat(),
         "last_activity_at": session.last_activity_at.isoformat(),
-        "current_url": session.page.url,
+        "current_url": session.get_url(),
     }
 
 
@@ -1024,15 +1024,58 @@ def get_task_screenshot(investigation_id: str, task_id: str):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid investigation UUID")
         
+    import os
+    # 1. If active in-memory session exists, try live screenshot first
     session = browser_session_manager.get_session(inv_uuid, task_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="No active browser session found for this task")
-        
+    if session:
+        try:
+            screenshot_bytes = session.screenshot()
+            if screenshot_bytes:
+                try:
+                    os.makedirs("/tmp/bizrisk_screenshots", exist_ok=True)
+                    with open(f"/tmp/bizrisk_screenshots/{inv_uuid}_{task_id}.png", "wb") as f:
+                        f.write(screenshot_bytes)
+                except Exception:
+                    pass
+                return Response(content=screenshot_bytes, media_type="image/png")
+        except Exception:
+            pass
+
+    # 2. Check deterministic persisted disk location
+    saved_path = f"/tmp/bizrisk_screenshots/{inv_uuid}_{task_id}.png"
+    if os.path.exists(saved_path):
+        try:
+            with open(saved_path, "rb") as f:
+                content = f.read()
+                if content:
+                    return Response(content=content, media_type="image/png")
+        except Exception:
+            pass
+
+    # 3. Check database BrowserSession metadata for persisted screenshot path
     try:
-        screenshot_bytes = session.page.screenshot(type="png")
-        return Response(content=screenshot_bytes, media_type="image/png")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to capture screenshot: {e}")
+        import json
+        from app.db.session import SessionLocal, db_lock
+        from app.models.browser_session import BrowserSession
+        with db_lock:
+            with SessionLocal() as db:
+                bs = db.query(BrowserSession).filter(
+                    BrowserSession.investigation_id == inv_uuid,
+                    BrowserSession.task_id == task_id
+                ).order_by(BrowserSession.started_at.desc()).first()
+                if bs and bs.failure_reason:
+                    try:
+                        meta = json.loads(bs.failure_reason)
+                        custom_path = meta.get("screenshot_path")
+                        if custom_path and os.path.exists(custom_path):
+                            with open(custom_path, "rb") as f:
+                                return Response(content=f.read(), media_type="image/png")
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=404, detail="No active browser session or saved screenshot found for this task")
 
 
 @router.post("/{investigation_id}/tasks/{task_id}/click")
@@ -1054,8 +1097,7 @@ def post_task_click(investigation_id: str, task_id: str, payload: dict):
         raise HTTPException(status_code=400, detail="Click coordinates x and y are required")
         
     try:
-        session.page.mouse.click(float(x), float(y))
-        session.touch()
+        session.click(float(x), float(y))
         return {"status": "success", "message": f"Clicked at ({x}, {y})"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to click: {e}")
@@ -1079,11 +1121,30 @@ def post_task_type(investigation_id: str, task_id: str, payload: dict):
         raise HTTPException(status_code=400, detail="Text field is required")
         
     try:
-        session.page.keyboard.type(str(text))
-        session.touch()
+        session.type(str(text))
         return {"status": "success", "message": "Typed text successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to type: {e}")
+
+
+@router.post("/{investigation_id}/tasks/{task_id}/clear")
+def post_task_clear(investigation_id: str, task_id: str):
+    import uuid
+    from app.core.browser_session_manager import browser_session_manager
+    try:
+        inv_uuid = uuid.UUID(investigation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid investigation UUID")
+        
+    session = browser_session_manager.get_session(inv_uuid, task_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="No active browser session found for this task")
+        
+    try:
+        session.clear()
+        return {"status": "success", "message": "Cleared input successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear input: {e}")
 
 
 

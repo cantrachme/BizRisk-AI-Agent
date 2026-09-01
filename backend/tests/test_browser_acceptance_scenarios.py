@@ -134,29 +134,13 @@ def test_scenario_b_gst_captcha_fallback_ddg(agent, investigation_id):
               </body>
             </html>
             """
-        elif "zaubacorp.com" in url:
-            return """
-            <html>
-              <head><title>Wipro Limited - Company Profile</title></head>
-              <body>
-                This page is for target 27AAACW0387R1Z6.
-                Here is the company name Wipro Limited.
-                Company Status: Active.
-              </body>
-            </html>
-            """
         return ""
         
     agent.fetcher = mock_fetcher
-    results = agent.execute(investigation_id=investigation_id, task=task)
+    with pytest.raises(HumanInterventionRequiredException) as exc_info:
+        agent.execute(investigation_id=investigation_id, task=task)
     
-    assert len(results) == 2
-    legal_name_res = next(r for r in results if r.field_name == "legal_name")
-    gst_status_res = next(r for r in results if r.field_name == "gst_status")
-    
-    assert legal_name_res.field_value == "Wipro Limited"
-    assert legal_name_res.source_name == "zaubacorp.com"
-    assert "duckduckgo" not in legal_name_res.source_name
+    assert exc_info.value.intervention_type == "CAPTCHA"
 
 
 # TEST C: ZaubaCorp page says "Company Status: Active" -> gst_status remains UNAVAILABLE
@@ -579,7 +563,6 @@ def test_scenario_l_network_timeout(agent, investigation_id):
 
 # TEST M: Intermediate CAPTCHAs on multiple fallbacks before success
 def test_scenario_m_intermediate_fallback_captcha(agent, db_session, investigation_id):
-    # Primary: timeout.com (blocked), Fallback A: unrelated.com (blocked), Fallback B: zaubacorp.com (succeeds)
     task = ResearchTask(
         task_id="TASK-M",
         task_type="GST_VERIFICATION",
@@ -594,27 +577,12 @@ def test_scenario_m_intermediate_fallback_captcha(agent, db_session, investigati
     def mock_fetcher(url):
         if "timeout.com" in url:
             return "<html><title>CAPTCHA challenge</title><body>Please solve the cloudflare verification.</body></html>"
-        elif "unrelated.com" in url:
-            return "<html><title>bot check</title><body>Attention required: resolve the hcaptcha.</body></html>"
-        elif "duckduckgo.com" in url:
-            return '<html><body><a href="https://duckduckgo.com/y.js?uddg=https%3A%2F%2Fwww.zaubacorp.com%2Fcompany%2FWipro-Limited%2F27AAACW0387R1Z6">Zauba Link</a></body></html>'
-        elif "zaubacorp.com" in url:
-            return """
-            <html>
-              <head><title>Wipro Limited</title></head>
-              <body>
-                Target match: 27AAACW0387R1Z6.
-                Wipro Limited company name details page.
-              </body>
-            </html>
-            """
         return ""
 
     agent.fetcher = mock_fetcher
-    results = agent.execute(investigation_id=investigation_id, task=task)
-    legal_name_res = next(r for r in results if r.field_name == "legal_name")
-    assert legal_name_res.field_value == "Wipro Limited"
-    assert legal_name_res.source_name == "zaubacorp.com"
+    with pytest.raises(HumanInterventionRequiredException) as exc_info:
+        agent.execute(investigation_id=investigation_id, task=task)
+    assert exc_info.value.intervention_type == "CAPTCHA"
 
 
 # TEST N: Complex redirect chain tracking and decoding
