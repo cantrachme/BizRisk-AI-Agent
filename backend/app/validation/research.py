@@ -98,6 +98,23 @@ def validate_research_result(
         else:
             errors.append(f"field_value '{result.field_value}' is a placeholder/status value, not factual evidence")
 
+    from app.research.base import is_address_like, is_valid_legal_name
+
+    # Semantic validation for address fields
+    if result.field_name in {
+        "registered_address", "establishment_address", "contact_address",
+        "principal_business_address", "principal_place_of_business", "corporate_address", "address"
+    }:
+        if isinstance(result.field_value, str) and not is_address_like(result.field_value):
+            errors.append(f"field_value '{result.field_value}' is not a valid address structure")
+
+    # Semantic validation for company legal name fields
+    if result.field_name in {
+        "legal_name", "company_name", "business_name", "establishment_name", "trade_name"
+    }:
+        if isinstance(result.field_value, str) and not is_valid_legal_name(result.field_value):
+            errors.append(f"field_value '{result.field_value}' is not a valid legal company name")
+
     return ResearchResultValidation(
         is_valid=not errors,
         errors=errors,

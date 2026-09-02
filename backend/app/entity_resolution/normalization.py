@@ -86,13 +86,15 @@ def normalize_entity(entity: dict) -> dict:
     name_val = entity.get("name") or entity.get("business_name")
     biz_name_val = entity.get("business_name") or entity.get("name")
 
+    from app.research.base import normalize_location
+    norm_loc = normalize_location(entity.get("location"))
     res = {
         "name": normalize_text(name_val),
         "business_name": normalize_text(biz_name_val),
         "gstin": normalize_identifier(entity.get("gstin")),
         "cin": normalize_identifier(entity.get("cin")),
         "website": normalize_website(entity.get("website")),
-        "location": normalize_text(entity.get("location")),
+        "location": norm_loc.upper() if norm_loc else None,
         "address": normalize_text(entity.get("address")),
     }
 

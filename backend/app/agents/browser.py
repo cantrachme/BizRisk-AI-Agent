@@ -24,8 +24,10 @@ from app.research.base import (
     extract_status_from_text,
     extract_business_activity_from_text,
     http_fetch_direct,
+    is_address_like,
     is_failed_or_blocked_response,
     is_url,
+    is_valid_legal_name,
     sanitize_prompt_injection,
     score_candidate_url,
     classify_entity_relationship,
@@ -1101,8 +1103,9 @@ class BrowserResearchAgent:
                 "corporate_address",
             }:
                 addr = BrowserResearchAgent._extract_address_from_text(text)
-                if addr == "NOT_FOUND":
-                    return "NOT_FOUND", "No address pattern or pin code matched in page text"
+                from app.research.base import is_address_like
+                if addr == "NOT_FOUND" or not is_address_like(addr):
+                    return "NOT_FOUND", "No valid structured address pattern matched in page text"
                 return addr, "Extracted address block from matching lines"
 
             if field_name in {
@@ -1130,13 +1133,13 @@ class BrowserResearchAgent:
                     match = re.search(r"(?:legal\s+name(?:\s+of\s+(?:business|taxpayer|company|the\s+taxpayer))?|company\s+name|name\s+of\s+(?:company|business|taxpayer)|establishment\s+name|trade\s+name)\s*[:\-]?\s*([A-Za-z0-9\s.,&()-]+)", line, re.IGNORECASE)
                     if match and len(match.group(1).strip()) > 3:
                         cand = clean_legal_name_candidate(match.group(1).strip())
-                        if cand:
+                        if cand and is_valid_legal_name(cand):
                             return cand, f"Extracted company name from line: '{line}'"
-                if cleaned_title:
+                if cleaned_title and is_valid_legal_name(cleaned_title):
                     return cleaned_title, "Normalized company name from page title"
                 if task.task_type in {"ENTITY_DISCOVERY", "GENERAL_WEB_RESEARCH"}:
                     cand = clean_legal_name_candidate(task.target)
-                    if cand:
+                    if cand and is_valid_legal_name(cand):
                         return cand, "Target company name used directly"
                 return "NOT_FOUND", "No valid company name title extracted"
 

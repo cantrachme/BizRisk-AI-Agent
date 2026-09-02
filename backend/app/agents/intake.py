@@ -32,7 +32,9 @@ class IntakeAgent:
         norm_cin, cin_prov = self._process_cin(raw_cin)
         norm_epfo, epfo_prov = self._process_text(raw_epfo)
         norm_web, web_prov = self._process_website(raw_web)
-        norm_loc, loc_prov = self._process_text(raw_loc)
+        from app.research.base import normalize_location
+        norm_loc_cleaned = normalize_location(raw_loc)
+        norm_loc, loc_prov = (norm_loc_cleaned, "USER_SUPPLIED") if norm_loc_cleaned else (None, "NOT_CHECKED")
 
         provenance = {
             "business_name": "USER_SUPPLIED" if norm_biz_name else "NOT_CHECKED",
