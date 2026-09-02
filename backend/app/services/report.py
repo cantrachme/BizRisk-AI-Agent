@@ -87,12 +87,62 @@ def build_verification_summary(evidences: list) -> dict[str, dict[str, str]]:
     return summary
 
 
+def normalize_address_for_reconciliation(addr: str | None) -> str:
+    if not addr:
+        return ""
+    import re
+    text = addr.lower().strip()
+    replacements = [
+        (r"\b(flr|floor|fl)\b", "floor"),
+        (r"\b(bldg|building)\b", "building"),
+        (r"\b(rd|road)\b", "road"),
+        (r"\b(st|street)\b", "street"),
+        (r"\b(apt|apartment)\b", "apartment"),
+        (r"\b(off|office)\b", "office"),
+        (r"\b(pt|point)\b", "point"),
+        (r"\b(pl|plot)\b", "plot"),
+        (r"\b(no|num|number)\b", "no"),
+        (r"\b(opp|opposite)\b", "opp"),
+        (r"\b(nr|near)\b", "near"),
+        (r"\b(dist|district)\b", "dist"),
+        (r"\b(sec|sector)\b", "sector"),
+        (r"\b(ph|phase)\b", "phase"),
+        (r"\b(hno|house\s+no)\b", "hno"),
+        (r"\bindia\b", ""),
+        (r"\bind\b", ""),
+    ]
+    for pattern, repl in replacements:
+        text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
+    return re.sub(r"[^a-z0-9]", "", text)
+
+
+def compare_semantic_fields(field_a: str, val_a: str, field_b: str, val_b: str) -> str:
+    """
+    Compares two values from given semantic fields.
+    If fields belong to different semantic categories, returns 'NOT_COMPARABLE'.
+    If values are missing, returns 'UNAVAILABLE'.
+    If fields are compatible, normalizes and returns 'MATCH' or 'CONFLICT'.
+    """
+    if field_a != field_b:
+        return "NOT_COMPARABLE"
+    if not val_a or not val_b:
+        return "UNAVAILABLE"
+    if field_a in {"registered_address", "establishment_address", "contact_address", "principal_business_address", "address"}:
+        norm_a = normalize_address_for_reconciliation(val_a)
+        norm_b = normalize_address_for_reconciliation(val_b)
+        return "MATCH" if (norm_a and norm_b and norm_a == norm_b) else "CONFLICT"
+    return "MATCH" if val_a.strip().lower() == val_b.strip().lower() else "CONFLICT"
+
+
 def build_cross_source_consistency(evidences: list, entity: dict) -> list[dict[str, Any]]:
     fields_to_reconcile = [
         ("legal_name", "Legal Entity Name"),
         ("gstin", "GSTIN Identifier"),
         ("cin", "CIN Identifier"),
         ("registered_address", "Registered Office Address"),
+        ("establishment_address", "EPFO Establishment Address"),
+        ("contact_address", "Official Contact Address"),
+        ("principal_business_address", "Principal Place of Business"),
         ("company_status", "Active Company Status"),
         ("business_activity", "Business Activity / Sector"),
         ("incorporation_date", "Incorporation Date"),
@@ -106,12 +156,12 @@ def build_cross_source_consistency(evidences: list, entity: dict) -> list[dict[s
         for ev in evidences:
             if ev.field_name == field_key and ev.confidence >= 0.50:
                 val = str(ev.field_value).strip()
-                if val.upper() not in {"NOT_FOUND", "UNAVAILABLE", "NONE", "BLOCKED"}:
+                if val.upper() not in {"NOT_FOUND", "UNAVAILABLE", "NONE", "BLOCKED", "ERROR", "UNKNOWN"}:
                     field_values[ev.source_name] = val
 
         # Also compare against user-supplied target value if present
         target_val = entity.get(field_key)
-        if target_val and str(target_val).strip().upper() not in {"NOT_FOUND", "UNAVAILABLE", "NONE"}:
+        if target_val and str(target_val).strip().upper() not in {"NOT_FOUND", "UNAVAILABLE", "NONE", "UNKNOWN"}:
             if "User Input" not in field_values:
                 field_values["User Input"] = str(target_val).strip()
 
@@ -125,34 +175,49 @@ def build_cross_source_consistency(evidences: list, entity: dict) -> list[dict[s
             })
             continue
 
-        unique_vals = list({v.upper(): v for v in field_values.values()}.values())
         sources_list = [{"source": src, "value": val} for src, val in field_values.items()]
 
-        if len(unique_vals) == 1:
-            status = "MATCH"
-            analysis = f"All sources ({', '.join(field_values.keys())}) are fully consistent."
-        else:
-            STOPWORDS = {
-                "AND", "THE", "OF", "IN", "FOR", "TO", "A", "AN", "PVT", "LTD", "LIMITED",
-                "INC", "LLP", "CO", "COMPANY", "SERVICES", "SOLUTIONS", "DEVELOPMENT", "&", "-"
-            }
-            v1_words = {w.strip(",.;:") for w in unique_vals[0].upper().split() if w not in STOPWORDS and len(w) > 2}
-            is_partial = False
-            for other_v in unique_vals[1:]:
-                v2_words = {w.strip(",.;:") for w in other_v.upper().split() if w not in STOPWORDS and len(w) > 2}
-                if v1_words and v2_words:
-                    intersection = v1_words.intersection(v2_words)
-                    union = v1_words.union(v2_words)
-                    if len(intersection) / len(union) >= 0.40:
-                        is_partial = True
-                        break
-            
-            if is_partial:
-                status = "PARTIAL_MATCH"
-                analysis = f"Minor formatting or text variations observed across sources: {', '.join(unique_vals)}."
+        # Address field normalization
+        if field_key in {"registered_address", "establishment_address", "contact_address", "principal_business_address", "address"}:
+            norm_map = {}
+            for src, val in field_values.items():
+                norm = normalize_address_for_reconciliation(val)
+                norm_map[src] = norm
+            unique_norms = set(norm_map.values())
+            if len(unique_norms) == 1:
+                status = "MATCH"
+                analysis = f"All sources ({', '.join(field_values.keys())}) are fully consistent."
             else:
                 status = "CONFLICT"
-                analysis = f"Conflicting data reported across sources: {'; '.join([f'{s}: {v}' for s, v in field_values.items()])}."
+                analysis = f"Conflicting address data reported across sources: {'; '.join([f'{s}: {v}' for s, v in field_values.items()])}."
+
+        else:
+            unique_vals = list({v.upper(): v for v in field_values.values()}.values())
+            if len(unique_vals) == 1:
+                status = "MATCH"
+                analysis = f"All sources ({', '.join(field_values.keys())}) are fully consistent."
+            else:
+                STOPWORDS = {
+                    "AND", "THE", "OF", "IN", "FOR", "TO", "A", "AN", "PVT", "LTD", "LIMITED",
+                    "INC", "LLP", "CO", "COMPANY", "SERVICES", "SOLUTIONS", "DEVELOPMENT", "&", "-"
+                }
+                v1_words = {w.strip(",.;:") for w in unique_vals[0].upper().split() if w not in STOPWORDS and len(w) > 2}
+                is_partial = False
+                for other_v in unique_vals[1:]:
+                    v2_words = {w.strip(",.;:") for w in other_v.upper().split() if w not in STOPWORDS and len(w) > 2}
+                    if v1_words and v2_words:
+                        intersection = v1_words.intersection(v2_words)
+                        union = v1_words.union(v2_words)
+                        if len(intersection) / len(union) >= 0.40:
+                            is_partial = True
+                            break
+                
+                if is_partial:
+                    status = "PARTIAL_MATCH"
+                    analysis = f"Minor formatting or text variations observed across sources: {', '.join(unique_vals)}."
+                else:
+                    status = "CONFLICT"
+                    analysis = f"Conflicting data reported across sources: {'; '.join([f'{s}: {v}' for s, v in field_values.items()])}."
 
         consistency_records.append({
             "field": field_label,
@@ -273,6 +338,21 @@ def generate_investigation_report(
         unverified_info = []
         reason_codes = list(analysis.get("reason_codes") or [])
 
+        from app.models.browser_session import BrowserSession
+        browser_sessions = (
+            db.query(BrowserSession)
+            .filter(BrowserSession.investigation_id == investigation_id)
+            .all()
+        )
+        for bs in browser_sessions:
+            if bs.status in {"BLOCKED_OR_ERROR", "ERROR", "TIMEOUT", "REJECTED", "IRRELEVANT_CONTENT"}:
+                source_limitations.append({
+                    "source": bs.domain or "External Source",
+                    "field": "source_access",
+                    "status": bs.status,
+                    "reason": f"External source {bs.domain} was inaccessible, blocked, or timed out during research.",
+                })
+
         for ev in sorted_evidences:
             val = ev.field_value
             val_str = str(val).strip().upper()
@@ -290,18 +370,23 @@ def generate_investigation_report(
                     "source": ev.source_name,
                 })
 
+        verification_summary = build_verification_summary(sorted_evidences)
+        cross_source_consistency = build_cross_source_consistency(sorted_evidences, entity)
+
         is_insufficient = analysis.get("insufficient_evidence", False) or analysis["overall_risk"]["score"] is None
         if is_insufficient:
-            if source_limitations and "AUTHORITATIVE_SOURCES_UNAVAILABLE" not in reason_codes:
-                reason_codes.append("AUTHORITATIVE_SOURCES_UNAVAILABLE")
+            if (
+                source_limitations
+                or verification_summary.get("gst", {}).get("status") in {"UNAVAILABLE", "NOT_FOUND", "BLOCKED", "CAPTCHA_REQUIRED"}
+                or verification_summary.get("mca", {}).get("status") in {"UNAVAILABLE", "NOT_FOUND", "BLOCKED", "CAPTCHA_REQUIRED"}
+            ):
+                if "AUTHORITATIVE_SOURCES_UNAVAILABLE" not in reason_codes:
+                    reason_codes.append("AUTHORITATIVE_SOURCES_UNAVAILABLE")
             if not entity.get("gstin") and not entity.get("cin"):
                 if "NO_VERIFIED_ENTITY_RECORD" not in reason_codes:
                     reason_codes.append("NO_VERIFIED_ENTITY_RECORD")
             if "INSUFFICIENT_EVIDENCE" not in reason_codes:
                 reason_codes.append("INSUFFICIENT_EVIDENCE")
-
-        verification_summary = build_verification_summary(sorted_evidences)
-        cross_source_consistency = build_cross_source_consistency(sorted_evidences, entity)
 
         # 7. Construct the report dict
         report_dict = {

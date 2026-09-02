@@ -43,7 +43,8 @@ class LiveBrowserSession:
         try:
             playwright_context = sync_playwright()
             playwright = playwright_context.__enter__()
-            headless = os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() == "true"
+            from app.core.config import get_settings
+            headless = get_settings().playwright_headless
             browser = playwright.chromium.launch(headless=headless)
             context = browser.new_context(
                 java_script_enabled=True,

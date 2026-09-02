@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     token_budget: int = 100000
 
     cors_origins: list[str] = ["http://localhost:3000"]
+    playwright_headless: bool = True
 
     @field_validator("database_url", mode="before")
     @classmethod

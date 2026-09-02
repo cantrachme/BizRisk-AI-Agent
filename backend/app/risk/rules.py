@@ -142,6 +142,27 @@ def normalize_address(addr: Any) -> str:
         addr_str = str(addr.get("text") or addr.get("title") or "").lower()
     else:
         addr_str = str(addr).lower()
+    replacements = [
+        (r"\b(flr|floor|fl)\b", "floor"),
+        (r"\b(bldg|building)\b", "building"),
+        (r"\b(rd|road)\b", "road"),
+        (r"\b(st|street)\b", "street"),
+        (r"\b(apt|apartment)\b", "apartment"),
+        (r"\b(off|office)\b", "office"),
+        (r"\b(pt|point)\b", "point"),
+        (r"\b(pl|plot)\b", "plot"),
+        (r"\b(no|num|number)\b", "no"),
+        (r"\b(opp|opposite)\b", "opp"),
+        (r"\b(nr|near)\b", "near"),
+        (r"\b(dist|district)\b", "dist"),
+        (r"\b(sec|sector)\b", "sector"),
+        (r"\b(ph|phase)\b", "phase"),
+        (r"\b(hno|house\s+no)\b", "hno"),
+        (r"\bindia\b", ""),
+        (r"\bind\b", ""),
+    ]
+    for pattern, repl in replacements:
+        addr_str = re.sub(pattern, repl, addr_str, flags=re.IGNORECASE)
     return re.sub(r"[^a-z0-9]", "", addr_str)
 
 
@@ -190,9 +211,11 @@ def evaluate_legal_name_conflict(evidences: List[NormalizedEvidence]) -> Optiona
 
 
 def evaluate_address_major_mismatch(evidences: List[NormalizedEvidence]) -> Optional[Dict[str, Any]]:
-    # Group evidences by field type to avoid cross-comparing registered vs contact addresses
+    # Group evidences by field type to avoid cross-comparing registered vs establishment vs contact vs principal business addresses
     groups = {
         "registered": [ev for ev in evidences if ev.field_name in ["registered_address", "address"]],
+        "establishment": [ev for ev in evidences if ev.field_name in ["establishment_address"]],
+        "principal_business": [ev for ev in evidences if ev.field_name in ["principal_business_address", "principal_place_of_business"]],
         "contact": [ev for ev in evidences if ev.field_name in ["contact_address"]],
     }
 
