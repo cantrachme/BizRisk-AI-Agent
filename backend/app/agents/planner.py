@@ -216,7 +216,7 @@ class PlannerAgent:
                 task_type="EPFO_VERIFICATION",
                 target=target_epfo,
                 objective=f"Verify EPFO code {target_epfo} and retrieve establishment registration details.",
-                required_fields=["establishment_name", "epfo_status", "registered_address"],
+                required_fields=["establishment_name", "epfo_status", "establishment_address"],
                 priority=1,
                 preferred_sources=epfo_pref,
                 fallback_sources=epfo_fall
@@ -227,7 +227,7 @@ class PlannerAgent:
                 task_type="EPFO_VERIFICATION",
                 target=target_epfo_search,
                 objective=f"Search EPFO establishment records to verify social security and employment registration for {primary_name}.",
-                required_fields=["establishment_name", "epfo_status", "registered_address"],
+                required_fields=["establishment_name", "epfo_status", "establishment_address"],
                 priority=1,
                 preferred_sources=epfo_pref,
                 fallback_sources=epfo_fall

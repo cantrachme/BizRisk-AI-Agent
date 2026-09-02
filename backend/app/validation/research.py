@@ -54,6 +54,8 @@ def validate_research_result(
         errors.append(
             "confidence must be between 0.0 and 1.0"
         )
+    elif result.confidence <= 0.0:
+        errors.append("confidence must be greater than 0.0 to be admitted as factual evidence")
 
     if not result.result_id.strip():
         errors.append("result_id is empty")
@@ -71,14 +73,30 @@ def validate_research_result(
         if not _is_valid_url(result.source_url):
             errors.append("source_url is invalid")
 
-    if (
-        result.field_name in VERIFICATION_FIELDS
-        and isinstance(result.field_value, str)
-        and result.field_value.upper() == "UNAVAILABLE"
-    ):
-        errors.append(
-            "verification result is unavailable"
-        )
+    PLACEHOLDER_STATUS_VALUES = {
+        "NOT_FOUND",
+        "UNAVAILABLE",
+        "UNKNOWN",
+        "ERROR",
+        "BLOCKED",
+        "IRRELEVANT",
+        "SOURCE_UNAVAILABLE",
+        "CAPTCHA_REQUIRED",
+        "NOT APPLICABLE",
+        "N/A",
+        "NA",
+        "NONE",
+        "NULL",
+        "SOMETHING WENT WRONG",
+    }
+    if isinstance(result.field_value, str) and result.field_value.strip().upper() in PLACEHOLDER_STATUS_VALUES:
+        if (
+            result.field_name in VERIFICATION_FIELDS
+            and result.field_value.upper() == "UNAVAILABLE"
+        ):
+            errors.append("verification result is unavailable")
+        else:
+            errors.append(f"field_value '{result.field_value}' is a placeholder/status value, not factual evidence")
 
     return ResearchResultValidation(
         is_valid=not errors,

@@ -785,8 +785,10 @@ class BrowserResearchAgent:
         except Exception as http_err:
             try:
                 from playwright.sync_api import sync_playwright
+                from app.core.config import get_settings
                 with sync_playwright() as p:
-                    browser = p.chromium.launch(headless=True)
+                    headless = get_settings().playwright_headless
+                    browser = p.chromium.launch(headless=headless)
                     context = browser.new_context(
                         java_script_enabled=True,
                         user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -1092,9 +1094,11 @@ class BrowserResearchAgent:
             if field_name in {
                 "address",
                 "registered_address",
-                "corporate_address",
+                "establishment_address",
                 "contact_address",
+                "principal_business_address",
                 "principal_place_of_business",
+                "corporate_address",
             }:
                 addr = BrowserResearchAgent._extract_address_from_text(text)
                 if addr == "NOT_FOUND":
