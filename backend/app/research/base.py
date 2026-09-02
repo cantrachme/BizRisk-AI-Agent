@@ -301,6 +301,168 @@ def http_fetch_direct(url: str, timeout: int = 10) -> str:
         return content_bytes.decode("utf-8", errors="replace")
 
 
+def is_address_like(addr: str | None) -> bool:
+    if not addr or not isinstance(addr, str):
+        return False
+    val = addr.strip()
+    if len(val) < 8:
+        return False
+
+    val_lower = val.lower()
+
+    # 1. Reject invalid placeholders, error phrases, patent text, and filing metadata
+    invalid_keywords = {
+        "not_found", "unavailable", "unknown", "error", "blocked", "irrelevant",
+        "source_unavailable", "captcha_required", "not applicable", "n/a", "na",
+        "none", "null", "something went wrong", "access denied", "403 forbidden",
+        "page not found", "404 not found", "503 service unavailable", "502 bad gateway",
+        "500 internal server error", "empty_response",
+    }
+    if val_lower in invalid_keywords:
+        return False
+
+    if any(k in val_lower for k in [
+        "patent number", "patent journal", "patent watch", "trademark", "computer science",
+        "amendment", "registration core fields", "core fields", "director details",
+        "signatory details", "shareholder", "balance sheet", "din :", "din:", "pan :", "pan:"
+    ]):
+        return False
+
+    # 2. Reject section headers, field labels, navigation, UI text, and business activity labels
+    section_headers_and_labels = [
+        "nature of business activities", "nature of business", "business activity",
+        "business activities", "principal business activity", "main activity",
+        "activity description", "principal place of business", "principal place",
+        "registered office address", "registered office", "registered address",
+        "establishment address", "corporate office", "office address", "contact details", "contact us",
+        "about us", "terms of service", "privacy policy", "copyright",
+        "all rights reserved", "company master data", "taxpayer details",
+        "filing status", "director details", "directors / signatory details",
+        "charges / balance sheet", "search taxpayer", "search company",
+        "search results", "navigation", "home / about", "view financials",
+        "financial details", "status: active", "gstin / uin", "cin / llpin",
+        "trade name", "legal name", "company status", "date of incorporation",
+        "jurisdiction", "constitution of business", "administrative office",
+    ]
+    for header in section_headers_and_labels:
+        if val_lower == header or val_lower == f"{header}:" or val_lower.startswith(f"{header} -") or val_lower.startswith(f"{header}:"):
+            return False
+
+    # 3. Reject activity taxonomy descriptions
+    activity_starters = [
+        "software publishing", "consultancy and supply", "other service activities",
+        "manufacture of", "wholesale of", "retail trade", "wholesale trade",
+        "legal activities", "accounting, bookkeeping", "management consultancy",
+        "architectural and engineering", "advertising and market", "publishing of",
+        "telecommunications", "financial service activities", "insurance, reinsurance",
+        "construction of buildings", "civil engineering", "specialised construction",
+        "food and beverage service", "accommodation", "information service activities"
+    ]
+    for act in activity_starters:
+        if val_lower.startswith(act) or val_lower == act:
+            return False
+
+    # 4. Check for genuine address structure:
+    has_pincode = bool(re.search(r"\b[1-9][0-9]{5}\b", val) or re.search(r"\b\d{5}(?:-\d{4})?\b", val))
+
+    address_structure_keywords = [
+        r"\b(?:floor|flr|ground\s+floor|first\s+floor|second\s+floor|third\s+floor|4th\s+floor|5th\s+floor|6th\s+floor|7th\s+floor|8th\s+floor|9th\s+floor|10th\s+floor)\b",
+        r"\b(?:building|bldg|tower|towers|park|plaza|court|heights|house|mansion|bhavan|bhawan)\b",
+        r"\b(?:road|rd|street|st|marg|lane|path|avenue|ave|drive|crescent|way|circle|chowk|bypass|highway)\b",
+        r"\b(?:plot|no\.?|house\s+no|h\.?no|flat|unit|suite|office|off\.?|room|cabin|premises|block|blk|sector|sec|phase|ph)\b",
+        r"\b(?:nagar|colony|enclave|complex|estate|vihar|puram|wadi|peth|layout|industrial\s+area|ind\s+area|midc|gidc|riico|sez)\b",
+        r"\b(?:point|hub|centre|center|square|sq|cross|main|junction|opposite|opp|near|nr|behind|adj)\b",
+    ]
+    has_address_keyword = any(bool(re.search(pat, val_lower)) for pat in address_structure_keywords)
+
+    indian_regions = {
+        "maharashtra", "karnataka", "delhi", "new delhi", "tamil nadu", "telangana", "gujarat",
+        "west bengal", "haryana", "uttar pradesh", "mumbai", "bengaluru", "bangalore", "chennai",
+        "hyderabad", "kolkata", "pune", "gurgaon", "gurugram", "noida", "ahmedabad", "jaipur",
+        "chandigarh", "kochi", "coimbatore", "indore", "india", "bharat"
+    }
+    has_region = any(r in val_lower for r in indian_regions)
+
+    # Valid genuine address must have (PIN code AND (address keyword OR region)) OR (address keyword AND region AND length >= 15)
+    if has_pincode and (has_address_keyword or has_region):
+        return True
+    if has_address_keyword and has_region and len(val) >= 15:
+        return True
+    if has_pincode and len(val) >= 20 and "," in val:
+        return True
+
+    return False
+
+
+def is_valid_legal_name(name: str | None) -> bool:
+    if not name or not isinstance(name, str):
+        return False
+    val = name.strip()
+    if not val or len(val) > 150:
+        return False
+
+    val_lower = val.lower()
+
+    # Reject if contains " in " (e.g. "COMPANY NAME in Maharashtra, India")
+    if re.search(r"\s+\bin\s+.*$", val_lower):
+        return False
+
+    # Reject placeholders and headers
+    invalid_keywords = {
+        "not_found", "unavailable", "unknown", "error", "blocked", "irrelevant",
+        "source_unavailable", "captcha_required", "not applicable", "n/a", "na",
+        "none", "null", "something went wrong", "access denied", "page not found",
+        "search results", "results for", "duckduckgo", "google search", "bing search",
+        "nature of business activities", "nature of business", "business activity",
+        "registered office", "registered address", "contact us", "about us", "terms of use",
+        "privacy policy", "all rights reserved"
+    }
+    if val_lower in invalid_keywords:
+        return False
+
+    portal_prefixes = (
+        "welcome", "home", "login", "index", "search", "companies matching", "404", "503", "502", "500", "403"
+    )
+    if val_lower.startswith(portal_prefixes):
+        return False
+
+    indian_regions_strict = {
+        "maharashtra", "karnataka", "delhi", "new delhi", "tamil nadu", "telangana", "gujarat",
+        "west bengal", "haryana", "uttar pradesh", "mumbai", "bengaluru", "bangalore", "chennai",
+        "hyderabad", "kolkata", "pune", "gurgaon", "gurugram", "noida", "india", "bharat"
+    }
+    if val_lower in indian_regions_strict or val_lower.replace(",", " ").strip() in indian_regions_strict:
+        return False
+
+    return True
+
+
+def normalize_location(location: str | None) -> str | None:
+    if not location or not isinstance(location, str):
+        return None
+    loc = location.strip()
+    import html as html_lib
+    loc = html_lib.unescape(loc)
+    loc = re.sub(r"<[^>]+>", " ", loc)
+    loc = re.sub(r"^(?:in\s+|located\s+in\s+|at\s+|from\s+|near\s+|city\s+of\s+|state\s+of\s+)", "", loc, flags=re.IGNORECASE).strip()
+    loc = re.sub(r"(?i)\s*[-|–—:]?\s*(?:official\s+website|website|company\s+registration|mca\s+details|search\s+results|cin|gstin)\b.*$", "", loc).strip()
+    loc = re.split(r"[?&#]", loc)[0].strip()
+    loc = re.sub(r"[.\-–—:|/,\s]+$", "", loc).strip()
+    parts = [p.strip().title() for p in re.split(r"[,/|;]+", loc) if p.strip()]
+    if not parts:
+        return None
+    seen = set()
+    deduped = []
+    for p in parts:
+        clean_p = re.sub(r"[.\-–—:|/,\s]+$", "", p).strip()
+        if clean_p.lower() not in seen and len(clean_p) >= 2:
+            seen.add(clean_p.lower())
+            deduped.append(clean_p)
+    if not deduped:
+        return None
+    return ", ".join(deduped)
+
+
 def extract_address_from_text(text: str | None) -> str:
     if not text:
         return "NOT_FOUND"
@@ -309,7 +471,7 @@ def extract_address_from_text(text: str | None) -> str:
         "registered address of", "registered office address of",
         "principal place of business", "principal place",
         "registered office address", "registered office", "registered address",
-        "corporate office", "office address", "contact address", "address"
+        "establishment address", "corporate office", "office address", "contact address", "address"
     ]
     for i, line in enumerate(lines):
         line_lower = line.lower()
@@ -321,27 +483,33 @@ def extract_address_from_text(text: str | None) -> str:
                 if match and len(match.group(1).strip()) > 5:
                     content = match.group(1).strip()
                     content = re.sub(r"^(?:[A-Za-z0-9\s.,&()/-]+\s+is\s+|is\s+|at\s+|is\s+at\s+)", "", content, flags=re.IGNORECASE).strip()
-                    content = re.split(r"(?i)\s+(?:business\s*activity|activity|gst\s*status|gstin|cin|status|incorporation|registration\s*date|contact|phone|email|website|date\s*of\s*incorporation|pan)\b", content)[0].strip()
+                    content = re.split(r"(?i)\s+(?:business\s*activity|nature\s+of\s+business|activity|gst\s*status|gstin|cin|status|incorporation|registration\s*date|contact|phone|email|website|date\s*of\s*incorporation|pan)\b", content)[0].strip()
                     if "." in content and len(content.split(".")[0]) > 8:
                         content = content.split(".")[0].strip()
-                    if content and len(content) > 5 and not any(k in content.lower() for k in ["search", "company", "director", "menu"]):
+                    if is_address_like(content):
                         return content
                 if i + 1 < len(lines):
                     next_line = lines[i + 1]
-                    if len(next_line) > 10 and not any(k in next_line.lower() for k in ["search", "menu", "home", "company", "director"]):
+                    if is_address_like(next_line):
                         return next_line
+                    # Try combining next 2-3 lines for multi-line addresses
+                    cand_block = ", ".join([lines[j] for j in range(i + 1, min(len(lines), i + 4)) if not any(kw in lines[j].lower() for kw in ["nature of business", "business activity", "director", "cin", "gstin"])])
+                    if is_address_like(cand_block):
+                        return cand_block
 
     indian_states = {"maharashtra", "karnataka", "delhi", "tamil nadu", "telangana", "gujarat", "west bengal", "haryana", "uttar pradesh", "mumbai", "bengaluru", "bangalore", "chennai", "hyderabad", "kolkata", "pune", "gurgaon", "noida"}
     for i, line in enumerate(lines):
         line_lower = line.lower()
-        if any(neg in line_lower for neg in ["same address", "similar address", "search", "menu"]):
+        if any(neg in line_lower for neg in ["same address", "similar address", "search", "menu", "nature of business"]):
             continue
         if re.search(r"\b\d{6}\b", line) and any(state in line_lower for state in indian_states):
             clean_line = re.sub(r"^(?:at\s+|is\s+at\s+|registered\s+address\s+of\s+[A-Za-z0-9\s.,&()/-]+\s+is|principal\s+place\s+of\s+business|registered\s+address|address|office)\s*[:\-]?", "", line, flags=re.IGNORECASE).strip()
-            if len(clean_line) > 10:
+            if is_address_like(clean_line):
                 return clean_line
-            addr_block = [lines[j] for j in range(max(0, i - 2), i + 1)]
-            return " | ".join(addr_block)
+            addr_block = [lines[j] for j in range(max(0, i - 2), i + 1) if not any(kw in lines[j].lower() for kw in ["nature of business", "business activity", "search"])]
+            cand = " | ".join(addr_block)
+            if is_address_like(cand):
+                return cand
 
     return "NOT_FOUND"
 
@@ -455,9 +623,10 @@ def clean_legal_name_candidate(name_candidate: str | None) -> str | None:
     for pat in suffix_patterns:
         name = re.sub(pat, "", name).strip()
 
-    # Strip trailing location contamination (e.g. "TATA CONSULTANCY SERVICES LIMITED in maharashtra")
-    name = re.sub(r"(?i)\s+\bin\s+[A-Za-z]+(?:\s+[A-Za-z]+)?$", "", name).strip()
+    # Strip any trailing "in <location>" query contamination generically (e.g. "TATA CONSULTANCY SERVICES LIMITED in maharashtra,india")
+    name = re.sub(r"(?i)\s+\bin\s+.*$", "", name).strip()
     name = re.sub(r"(?i)\s+(?:mca\s+company\s+registration|epfo\s+establishment|official\s+website|company\s+registration|master\s+data)\b.*$", "", name).strip()
+    name = re.sub(r"(?i),\s*(?:maharashtra|karnataka|delhi|tamil nadu|gujarat|telangana|haryana|uttar pradesh|west bengal|mumbai|bengaluru|bangalore|delhi|new delhi|chennai|hyderabad|pune|kolkata|india|bharat)\b.*$", "", name).strip()
 
     KNOWN_SLOGANS = [
         "leadership with trust", "where quality matters", "online store", "online electronic",
@@ -499,6 +668,7 @@ def clean_legal_name_candidate(name_candidate: str | None) -> str | None:
         or any(phrase in name_lower for phrase in ["s and logos appearing", "trademarks and logos", "something went wrong", "access denied", "page not found"])
         or any(se in name_lower for se in ["duckduckgo", "bing search", "google search", "yahoo search"])
         or any(pt in name_lower for pt in portal_titles)
+        or not is_valid_legal_name(name)
     ):
         return None
 
