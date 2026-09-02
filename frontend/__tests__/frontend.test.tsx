@@ -34,6 +34,10 @@ jest.mock('../lib/api', () => ({
     getEvents: jest.fn().mockResolvedValue([]),
     getEventsStreamUrl: jest.fn().mockReturnValue('http://localhost:8000/api/v1/investigations/1/events/stream'),
     completeHumanIntervention: jest.fn(),
+    getBrowserSession: jest.fn().mockResolvedValue({ status: 'SUCCESS', has_session: false, requires_interaction: false }),
+    sendClick: jest.fn().mockResolvedValue({ status: 'SUCCESS' }),
+    sendType: jest.fn().mockResolvedValue({ status: 'SUCCESS' }),
+    getScreenshotUrl: jest.fn().mockReturnValue('http://localhost:8000/api/v1/investigations/1/tasks/TASK-1/screenshot?cb=0'),
   },
   APIError: class extends Error {
     status: number;
