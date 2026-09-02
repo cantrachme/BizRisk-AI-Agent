@@ -55,9 +55,8 @@ export default function InvestigationPage() {
 
   const checkBrowserSession = async (taskId: string) => {
     try {
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const res = await fetch(`${API_URL}/api/v1/investigations/${id}/tasks/${taskId}/browser-session`);
-      if (res.ok) {
+      const res = await api.getBrowserSession(id, taskId);
+      if (res && res.has_session) {
         setActiveSessions(prev => ({ ...prev, [taskId]: true }));
       } else {
         setActiveSessions(prev => ({ ...prev, [taskId]: false }));
@@ -74,15 +73,8 @@ export default function InvestigationPage() {
 
     setInteractionLoading(prev => ({ ...prev, [taskId]: true }));
     try {
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const res = await fetch(`${API_URL}/api/v1/investigations/${id}/tasks/${taskId}/click`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ x: clickX, y: clickY }),
-      });
-      if (res.ok) {
-        setScreenshotRefresh(prev => ({ ...prev, [taskId]: Date.now() }));
-      }
+      await api.sendClick(id, taskId, { x: clickX, y: clickY });
+      setScreenshotRefresh(prev => ({ ...prev, [taskId]: Date.now() }));
     } catch (err) {
       console.error("Click failed:", err);
     } finally {
@@ -96,16 +88,9 @@ export default function InvestigationPage() {
 
     setInteractionLoading(prev => ({ ...prev, [taskId]: true }));
     try {
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const res = await fetch(`${API_URL}/api/v1/investigations/${id}/tasks/${taskId}/type`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      if (res.ok) {
-        setTypeTexts(prev => ({ ...prev, [taskId]: '' }));
-        setScreenshotRefresh(prev => ({ ...prev, [taskId]: Date.now() }));
-      }
+      await api.sendType(id, taskId, { text });
+      setTypeTexts(prev => ({ ...prev, [taskId]: '' }));
+      setScreenshotRefresh(prev => ({ ...prev, [taskId]: Date.now() }));
     } catch (err) {
       console.error("Typing failed:", err);
     } finally {
@@ -510,7 +495,7 @@ export default function InvestigationPage() {
                     
                     <div style={{ position: 'relative', overflow: 'hidden', borderRadius: '4px', background: '#000', cursor: 'crosshair', maxWidth: '600px', border: '1px solid #222' }}>
                       <img
-                        src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/investigations/${id}/tasks/${task.task_id}/screenshot?cb=${screenshotRefresh[task.task_id] || 0}`}
+                        src={api.getScreenshotUrl(id, task.task_id, screenshotRefresh[task.task_id])}
                         alt="Live Browser Session"
                         onClick={(e) => handleScreenshotClick(task.task_id, e)}
                         style={{ width: '100%', height: 'auto', display: 'block', opacity: interactionLoading[task.task_id] ? 0.6 : 1 }}
@@ -1165,11 +1150,13 @@ export default function InvestigationPage() {
 
             {reports.length === 0 ? (
               <div style={panelEmptyStyle}>No intelligence report generated yet.</div>
-            ) : (
+            ) : (() => {
+              const activeReportData = (reports[selectedReportIdx]?.report || {}) as Record<string, any>;
+              return (
               <div style={reportContainerStyle}>
                 {/* Report Metadata */}
                 <div style={reportMetaGridStyle}>
-                  <div>Rule Engine: <strong>v{reports[selectedReportIdx].report.meta?.rule_version || '1.0.0'}</strong></div>
+                  <div>Rule Engine: <strong>v{activeReportData.meta?.rule_version || '1.0.0'}</strong></div>
                   <div>Report version: <strong>{reports[selectedReportIdx].version}</strong></div>
                   <div>QA Status: 
                     <span style={{ 
@@ -1184,8 +1171,8 @@ export default function InvestigationPage() {
                       {reports[selectedReportIdx].qa_status}
                     </span>
                   </div>
-                  {reports[selectedReportIdx].report.meta?.generated_at && (
-                    <div>Timestamp: <strong>{new Date(reports[selectedReportIdx].report.meta?.generated_at || '').toLocaleString()}</strong></div>
+                  {activeReportData.meta?.generated_at && (
+                    <div>Timestamp: <strong>{new Date(activeReportData.meta?.generated_at || '').toLocaleString()}</strong></div>
                   )}
                 </div>
 
@@ -1194,20 +1181,20 @@ export default function InvestigationPage() {
                   <h4 style={reportSecHeaderStyle}>Executive Summary</h4>
                   <div style={reportTextCardStyle}>
                     <p style={{ margin: 0, lineHeight: '1.5' }}>
-                      {reports[selectedReportIdx].report.recommendation || 'Based on available public evidence, no recommendation available.'}
+                      {activeReportData.recommendation || 'Based on available public evidence, no recommendation available.'}
                     </p>
                   </div>
 
                   {/* Verification Summary Per Registry */}
-                  {reports[selectedReportIdx].report.verification_summary && (
+                  {activeReportData.verification_summary && (
                     <div style={{ marginTop: '20px' }}>
                       <h4 style={reportSecHeaderStyle}>Registry Verification Summary</h4>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
-                        {Object.entries(reports[selectedReportIdx].report.verification_summary).map(([srcKey, sData]: [string, any]) => {
-                          const isV = sData.status === 'VERIFIED';
-                          const isC = sData.status === 'CAPTCHA_REQUIRED';
-                          const isB = sData.status === 'BLOCKED';
-                          const isN = sData.status === 'NOT_FOUND';
+                        {Object.entries(activeReportData.verification_summary).map(([srcKey, sData]: [string, any]) => {
+                          const isV = sData?.status === 'VERIFIED';
+                          const isC = sData?.status === 'CAPTCHA_REQUIRED';
+                          const isB = sData?.status === 'BLOCKED';
+                          const isN = sData?.status === 'NOT_FOUND';
                           const sColor = isV ? '#34d399' : isC ? '#f59e0b' : isB ? '#f87171' : isN ? '#94a3b8' : '#e2e8f0';
                           const sBadge = isV ? '✓ VERIFIED' : isC ? '⚠ CAPTCHA' : isB ? '⚠ BLOCKED' : isN ? 'ℹ NOT FOUND' : 'UNAVAILABLE';
                           
@@ -1232,7 +1219,7 @@ export default function InvestigationPage() {
                                 <strong style={{ fontSize: '12px', color: '#fff' }}>{label}</strong>
                                 <span style={{ fontSize: '10px', fontWeight: '700', color: sColor, padding: '1px 6px', borderRadius: '4px', background: `${sColor}1a` }}>{sBadge}</span>
                               </div>
-                              <p style={{ margin: 0, fontSize: '11px', color: 'var(--foreground-muted)', lineHeight: '1.3' }}>{sData.details}</p>
+                              <p style={{ margin: 0, fontSize: '11px', color: 'var(--foreground-muted)', lineHeight: '1.3' }}>{sData?.details}</p>
                             </div>
                           );
                         })}
@@ -1241,7 +1228,7 @@ export default function InvestigationPage() {
                   )}
 
                   {/* Cross-Source Consistency Reconciliation Table */}
-                  {reports[selectedReportIdx].report.cross_source_consistency && (
+                  {Array.isArray(activeReportData.cross_source_consistency) && activeReportData.cross_source_consistency.length > 0 && (
                     <div style={{ marginTop: '20px' }}>
                       <h4 style={reportSecHeaderStyle}>Cross-Source Consistency Reconciliation</h4>
                       <div style={{ overflowX: 'auto', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '8px' }}>
@@ -1255,7 +1242,7 @@ export default function InvestigationPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {reports[selectedReportIdx].report.cross_source_consistency.map((rec: any, idx: number) => {
+                            {activeReportData.cross_source_consistency.map((rec: any, idx: number) => {
                               const isM = rec.status === 'MATCH';
                               const isP = rec.status === 'PARTIAL_MATCH';
                               const isC = rec.status === 'CONFLICT';
@@ -1297,17 +1284,17 @@ export default function InvestigationPage() {
                   )}
 
                   {/* Source Limitations & Unverified Information */}
-                  {((reports[selectedReportIdx].report.source_limitations && reports[selectedReportIdx].report.source_limitations.length > 0) ||
-                    (reports[selectedReportIdx].report.unverified_information && reports[selectedReportIdx].report.unverified_information.length > 0)) && (
+                  {((Array.isArray(activeReportData.source_limitations) && activeReportData.source_limitations.length > 0) ||
+                    (Array.isArray(activeReportData.unverified_information) && activeReportData.unverified_information.length > 0)) && (
                     <div style={{ marginTop: '20px' }}>
                       <h4 style={reportSecHeaderStyle}>Source Limitations & Unverified Information</h4>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {(reports[selectedReportIdx].report.source_limitations || []).map((lim: any, lIdx: number) => (
+                        {(activeReportData.source_limitations || []).map((lim: any, lIdx: number) => (
                           <div key={lIdx} style={{ padding: '10px 12px', borderRadius: '6px', background: 'rgba(245, 158, 11, 0.04)', border: '1px solid rgba(245, 158, 11, 0.2)', fontSize: '12px', color: '#f59e0b' }}>
                             ⚠ <strong>{lim.source}</strong>: {lim.reason || lim.status}
                           </div>
                         ))}
-                        {(reports[selectedReportIdx].report.unverified_information || []).map((unv: any, uIdx: number) => (
+                        {(activeReportData.unverified_information || []).map((unv: any, uIdx: number) => (
                           <div key={uIdx} style={{ padding: '10px 12px', borderRadius: '6px', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid rgba(255, 255, 255, 0.06)', fontSize: '12px', color: 'var(--foreground-muted)' }}>
                             ℹ Unverified field <strong>{unv.field}</strong> from {unv.source}: <code>{String(unv.value)}</code>
                           </div>
@@ -1318,10 +1305,10 @@ export default function InvestigationPage() {
 
                   <h4 style={{ ...reportSecHeaderStyle, marginTop: '24px' }}>Findings Detail</h4>
                   <div style={reportFindingsListStyle}>
-                    {(reports[selectedReportIdx].report.major_findings as unknown as FindingItem[] | undefined)?.length === 0 ? (
+                    {(activeReportData.major_findings as unknown as FindingItem[] | undefined)?.length === 0 ? (
                       <p style={{ fontSize: '12px', color: 'var(--foreground-muted)', margin: '4px 0' }}>No high-risk compliance findings detected.</p>
                     ) : (
-                      (reports[selectedReportIdx].report.major_findings as unknown as FindingItem[] | undefined)?.map((finding: FindingItem, idx: number) => (
+                      (activeReportData.major_findings as unknown as FindingItem[] | undefined)?.map((finding: FindingItem, idx: number) => (
                         <div key={idx} style={findingCardStyle}>
                           <div style={findingCardHeaderStyle}>
                             <strong>{finding.code}</strong>
@@ -1342,7 +1329,8 @@ export default function InvestigationPage() {
                   </div>
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
 
         </div>
