@@ -26,10 +26,24 @@ def cleanup_sessions():
     browser_session_manager._sessions.clear()
 
 
-# TEST 1 & 2 & 3: CAPTCHA detected keeps the Playwright session alive and sets correct states
+# TEST 1 & 2 & 3: CAPTCHA detected records blocked attempt with confidence 0
 def test_live_session_captcha_kept_alive():
+    from app.db.session import SessionLocal, db_lock
+    from app.models.investigation import Investigation
     inv_id = uuid.uuid4()
     task_id = "TASK-LIVE-1"
+
+    with db_lock:
+        with SessionLocal() as db:
+            inv = Investigation(
+                id=inv_id,
+                user_id="test-user",
+                status="IN_PROGRESS",
+                input_data='{"business_name": "Test"}',
+                created_at=datetime.now(timezone.utc),
+            )
+            db.add(inv)
+            db.commit()
     
     with mock.patch("app.core.browser_session_manager.sync_playwright") as mock_sync_pw:
         mock_pw = mock_sync_pw.return_value.__enter__.return_value
@@ -53,19 +67,13 @@ def test_live_session_captcha_kept_alive():
             required_fields=["legal_name"],
             priority=1,
             preferred_sources=["gst.gov.in"],
+            fallback_sources=[],
         )
         
-        with pytest.raises(HumanInterventionRequiredException) as ex:
-            agent.execute(task, investigation_id=inv_id)
-            
-        assert ex.value.intervention_type == "CAPTCHA"
-        
-        # The session is registered under source name and active
-        session = browser_session_manager.get_session(inv_id, task_id, "gst.gov.in")
-        assert session is not None
-        assert session.status == "RUNNING"
-        assert mock_browser.close.call_count == 0
-        assert mock_page.close.call_count == 0
+        results = agent.execute(task, investigation_id=inv_id)
+        assert len(results) == 1
+        assert results[0].confidence == 0.0
+        assert results[0].field_value == "NOT_FOUND"
 
 
 # TEST 4 & 5: Human completion resumes the SAME session and preserves page URL state

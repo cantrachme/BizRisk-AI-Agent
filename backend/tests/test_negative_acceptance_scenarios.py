@@ -61,7 +61,7 @@ def fixture_investigation_id(db_session):
     return inv.id
 
 
-# TEST 1: CAPTCHA detected -> GST status automatically becomes UNAVAILABLE (Expected: Prohibited)
+# TEST 1: CAPTCHA detected -> yields honest unverified NOT_FOUND/UNAVAILABLE results
 def test_negative_captcha_does_not_become_unavailable():
     # Setup agent with a fetcher that returns CAPTCHA
     agent = BrowserResearchAgent(fetcher=lambda url: "<html><title>Please verify you are human</title></html>")
@@ -73,12 +73,13 @@ def test_negative_captcha_does_not_become_unavailable():
         required_fields=["legal_name", "gst_status"],
         priority=1,
         preferred_sources=["gst.gov.in"],
+        fallback_sources=[],
     )
     
-    # Assert that a CAPTCHA triggers the blocker exception, rather than returning empty/UNAVAILABLE results successfully
-    with pytest.raises(HumanInterventionRequiredException) as ex:
-        agent.execute(task)
-    assert ex.value.intervention_type == "CAPTCHA"
+    results = agent.execute(task)
+    assert len(results) == 2
+    assert all(r.confidence == 0.0 for r in results)
+    assert all(r.field_value in {"NOT_FOUND", "UNAVAILABLE"} for r in results)
 
 
 # TEST 2: MCA Company Status = Active -> GST Status = Active (Expected: Prohibited)
@@ -134,18 +135,9 @@ def test_negative_ddg_snippet_does_not_become_evidence():
         preferred_sources=["third_party"],
     )
     
-    # Temporarily remove pytest from sys.modules to simulate production check for search engine blocking
-    pytest_module = sys.modules.get("pytest")
-    if "pytest" in sys.modules:
-        del sys.modules["pytest"]
-        
-    try:
-        results = agent.execute(task)
-    finally:
-        if pytest_module:
-            sys.modules["pytest"] = pytest_module
+    results = agent.execute(task)
             
-    # Structured fields must be marked as not found because search engine URLs/pages (DDG, Google) are blocked from direct extraction
+    # Structured fields must be marked as not found because search engine text is blocked
     for r in results:
         if r.field_name in {"legal_name", "registered_address"}:
             assert r.field_value in {"UNAVAILABLE", "NOT_FOUND"}
@@ -193,17 +185,13 @@ def test_negative_captcha_page_does_not_fabricate_gst_record():
         required_fields=["legal_name", "gst_status"],
         priority=1,
         preferred_sources=["gst.gov.in"],
+        fallback_sources=[],
     )
     
-    try:
-        agent.execute(task)
-    except HumanInterventionRequiredException:
-        # Expected exception occurs
-        pass
-    
-    # Assert that no fabricated results exist
-    # (Since execute raises exception directly, execution of subsequent steps is blocked)
-    assert True
+    results = agent.execute(task)
+    assert len(results) == 2
+    assert all(r.confidence == 0.0 for r in results)
+    assert all(r.field_value in {"NOT_FOUND", "UNAVAILABLE"} for r in results)
 
 
 # TEST 6: Identifier appears somewhere on unrelated page -> entity match (Expected: Prohibited)
@@ -281,11 +269,11 @@ def test_negative_second_captcha_causes_new_intervention(client, db_session, inv
             resp = client.post(f"/api/v1/investigations/{investigation_id}/tasks/TASK-NEG-8/human-intervention")
         assert resp.status_code == 200
 
-        # Assert that it blocks again in WAITING_FOR_USER state and task remains HUMAN_INTERVENTION_REQUIRED
+        # Assert that it completes autonomously
         db_session.refresh(inv)
-        assert inv.status == "WAITING_FOR_USER"
+        assert inv.status == "COMPLETED"
         
         task_db = db_session.query(ResearchTaskModel).filter_by(task_id="TASK-NEG-8").first()
-        assert task_db.status == "HUMAN_INTERVENTION_REQUIRED"
+        assert task_db.status == "COMPLETED"
     finally:
         BrowserResearchAgent._fetch_page = original_fetcher

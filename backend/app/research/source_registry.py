@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
@@ -29,6 +30,69 @@ class SourceMetadata:
     priority: int = 1
     default_confidence: float = 0.50
     config: Dict = field(default_factory=dict)
+
+    def resolve_target_url(self, target: str, task_type: Optional[str] = None) -> Optional[str]:
+        """
+        Dynamically resolves the exact company or research page URL from source configuration.
+        Handles company name slugs, CIN, GSTIN, and explicit website URLs.
+        """
+        if not target or not isinstance(target, str):
+            return self.base_url
+
+        target_clean = target.strip()
+        cin_match = re.search(r"\b([UL][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6})\b", target_clean.upper())
+        gstin_match = re.search(r"\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})\b", target_clean.upper())
+        cin = cin_match.group(1) if cin_match else None
+        gstin = gstin_match.group(1) if gstin_match else None
+
+        is_direct_url = bool(
+            target_clean.startswith(("http://", "https://"))
+            or (("." in target_clean) and (" " not in target_clean) and ("/" in target_clean or target_clean.endswith((".com", ".in", ".org", ".net", ".io", ".co"))))
+        )
+
+        if self.name == "company_website" or self.source_type == SourceType.OFFICIAL_WEBSITE or task_type == "WEBSITE_VERIFICATION":
+            if is_direct_url:
+                return target_clean if "://" in target_clean else f"https://{target_clean}"
+            clean_name = re.sub(r"(?i)\s+(?:official\s*website|website|in\s*india|company\s*registration|pvt|ltd|limited|private|llp|corp|inc)\b", "", target_clean).strip()
+            slug = re.sub(r"[^a-zA-Z0-9]", "", clean_name).lower()
+            return f"https://www.{slug}.com" if slug else None
+
+        if is_direct_url and self.source_type != SourceType.GOVERNMENT:
+            return target_clean if "://" in target_clean else f"https://{target_clean}"
+
+        # Clean business name slug
+        clean_name = target_clean
+        if gstin:
+            clean_name = clean_name.replace(gstin, "")
+        if cin:
+            clean_name = clean_name.replace(cin, "")
+        clean_name = re.sub(r"(?i)\s+(?:in\s+[A-Za-z]+|mca\s+company\s+registration|epfo\s+establishment|official\s*website|company\s*registration|search|portal|master\s*data)\b", "", clean_name).strip()
+        clean_name = re.sub(r"[^a-zA-Z0-9\s-]", "", clean_name).strip()
+        slug = re.sub(r"\s+", "-", clean_name).strip("-").lower()
+
+        # 1. Configured pattern resolution
+        if cin and slug and self.config.get("cin_name_url_pattern"):
+            return self.config["cin_name_url_pattern"].format(slug=slug, cin=cin)
+        if cin and self.config.get("cin_url_pattern"):
+            return self.config["cin_url_pattern"].format(cin=cin)
+        if gstin and self.config.get("gstin_url_pattern"):
+            return self.config["gstin_url_pattern"].format(gstin=gstin)
+        if slug and self.config.get("name_url_pattern"):
+            return self.config["name_url_pattern"].format(slug=slug)
+        if self.config.get("url_template"):
+            return self.config["url_template"].format(slug=slug or target_clean, cin=cin or "", gstin=gstin or "")
+
+        # 2. Base URL fallback
+        if self.base_url:
+            if any(gov in self.base_url for gov in ["services.gst.gov.in", "mca.gov.in", "epfindia.gov.in"]):
+                return self.base_url
+            if slug:
+                return f"{self.base_url.rstrip('/')}/company/{slug}"
+            if cin:
+                return f"{self.base_url.rstrip('/')}/company/{cin}"
+            return self.base_url
+
+        return None
 
 
 class SourceRegistryManager:
@@ -97,6 +161,11 @@ class SourceRegistryManager:
                 base_url="https://www.quickcompany.in",
                 priority=2,
                 default_confidence=0.80,
+                config={
+                    "cin_url_pattern": "https://www.quickcompany.in/company/{cin}",
+                    "gstin_url_pattern": "https://www.quickcompany.in/company/{gstin}",
+                    "name_url_pattern": "https://www.quickcompany.in/company/{slug}",
+                },
             ),
             SourceMetadata(
                 source_id="tofler",
@@ -108,6 +177,10 @@ class SourceRegistryManager:
                 base_url="https://www.tofler.in",
                 priority=2,
                 default_confidence=0.75,
+                config={
+                    "cin_url_pattern": "https://www.tofler.in/company/{cin}",
+                    "name_url_pattern": "https://www.tofler.in/company/{slug}",
+                },
             ),
             SourceMetadata(
                 source_id="zaubacorp",
@@ -119,6 +192,11 @@ class SourceRegistryManager:
                 base_url="https://www.zaubacorp.com",
                 priority=2,
                 default_confidence=0.75,
+                config={
+                    "cin_url_pattern": "https://www.zaubacorp.com/company/{cin}",
+                    "cin_name_url_pattern": "https://www.zaubacorp.com/company/{slug}/{cin}",
+                    "name_url_pattern": "https://www.zaubacorp.com/company/{slug}",
+                },
             ),
             SourceMetadata(
                 source_id="instafinancials",
@@ -130,6 +208,10 @@ class SourceRegistryManager:
                 base_url="https://www.instafinancials.com",
                 priority=2,
                 default_confidence=0.75,
+                config={
+                    "cin_url_pattern": "https://www.instafinancials.com/company/{cin}",
+                    "name_url_pattern": "https://www.instafinancials.com/company/{slug}",
+                },
             ),
             SourceMetadata(
                 source_id="third-party",
@@ -138,9 +220,14 @@ class SourceRegistryManager:
                 source_type=SourceType.THIRD_PARTY_REGISTRY,
                 authority_tier=3,
                 supported_task_types=["GST_VERIFICATION", "MCA_VERIFICATION", "EPFO_VERIFICATION", "THIRD_PARTY_RESEARCH"],
-                base_url=None,
+                base_url="https://www.quickcompany.in",
                 priority=3,
                 default_confidence=0.50,
+                config={
+                    "cin_url_pattern": "https://www.quickcompany.in/company/{cin}",
+                    "gstin_url_pattern": "https://www.quickcompany.in/company/{gstin}",
+                    "name_url_pattern": "https://www.quickcompany.in/company/{slug}",
+                },
             ),
             SourceMetadata(
                 source_id="generic-web",
@@ -149,9 +236,14 @@ class SourceRegistryManager:
                 source_type=SourceType.PUBLIC_DIRECTORY,
                 authority_tier=4,
                 supported_task_types=["ENTITY_DISCOVERY", "GENERAL_WEB_RESEARCH", "WEBSITE_VERIFICATION", "THIRD_PARTY_RESEARCH"],
-                base_url=None,
+                base_url="https://www.quickcompany.in",
                 priority=4,
                 default_confidence=0.60,
+                config={
+                    "cin_url_pattern": "https://www.quickcompany.in/company/{cin}",
+                    "gstin_url_pattern": "https://www.quickcompany.in/company/{gstin}",
+                    "name_url_pattern": "https://www.quickcompany.in/company/{slug}",
+                },
             ),
         ]
 

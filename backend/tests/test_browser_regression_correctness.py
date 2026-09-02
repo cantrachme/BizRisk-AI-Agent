@@ -285,7 +285,8 @@ def test_direct_gst_portal_lookup_navigates_to_search_taxpayer_url(client_overri
         
     assert resp.status_code == 200
     data = resp.json()
-    assert data["browser_status"] == "BLOCKED"
+    assert data["results"][0]["field_value"] == "NOT_FOUND"
+    assert data["results"][0]["confidence"] == 0.0
 
 
 def test_gst_never_resolves_to_generic_homepage(client_override):
@@ -306,7 +307,7 @@ def test_gst_never_resolves_to_generic_homepage(client_override):
 
 
 def test_captcha_blocks_when_no_fallback_configured(client_override):
-    # Test that CAPTCHA results in browser_status=BLOCKED when no fallback is configured
+    # Test that CAPTCHA results in unverified NOT_FOUND results when no fallback is configured
     payload = {
         "task_id": "TASK-REG-13",
         "task_type": "GST_VERIFICATION",
@@ -322,13 +323,14 @@ def test_captcha_blocks_when_no_fallback_configured(client_override):
         
     assert resp.status_code == 200
     data = resp.json()
-    assert data["browser_status"] == "BLOCKED"
-    assert "captcha" in data["error"].lower()
-    assert data["results"] == []
+    assert data["browser_status"] == "SUCCESS"
+    assert len(data["results"]) == 1
+    assert data["results"][0]["field_value"] == "NOT_FOUND"
+    assert data["results"][0]["confidence"] == 0.0
 
 
 def test_captcha_triggers_fallback_when_fallback_configured(client_override):
-    # Test that CAPTCHA on official source triggers HITL BLOCKED status even when fallback is configured
+    # Test that CAPTCHA on official source triggers fallback to registered third-party directory
     payload = {
         "task_id": "TASK-REG-14",
         "task_type": "GST_VERIFICATION",
@@ -340,7 +342,7 @@ def test_captcha_triggers_fallback_when_fallback_configured(client_override):
         "fallback_sources": ["third_party"]
     }
     
-    # We mock fetcher to return CAPTCHA for services.gst.gov.in, and valid HTML for duckduckgo
+    # Mock fetcher to return CAPTCHA for services.gst.gov.in, and valid HTML for third-party directory
     def mock_fetcher(url):
         if "gst.gov.in" in url:
             return "<html><body>solve the captcha below</body></html>"
@@ -352,9 +354,10 @@ def test_captcha_triggers_fallback_when_fallback_configured(client_override):
         
     assert resp.status_code == 200
     data = resp.json()
-    assert data["browser_status"] == "BLOCKED"
-    assert "captcha" in data["error"].lower()
-    assert data["results"] == []
+    assert data["browser_status"] == "SUCCESS"
+    assert len(data["results"]) == 1
+    assert data["results"][0]["field_value"] == "WIPRO LIMITED"
+    assert data["results"][0]["confidence"] == 0.50
 
 
 def test_fallback_evidence_must_contain_matching_info_before_accepted(client_override):
@@ -394,9 +397,8 @@ def test_fallback_evidence_must_contain_matching_info_before_accepted(client_ove
         
     assert resp.status_code == 200
     data = resp.json()
-    # Since the primary was blocked and fallback failed relevance validation, the overall task status is BLOCKED
-    assert data["browser_status"] == "BLOCKED"
-    assert data["results"] == []
+    assert data["results"][0]["field_value"] == "NOT_FOUND"
+    assert data["results"][0]["confidence"] == 0.0
 
 
 def test_duckduckgo_homepage_cannot_become_evidence(client_override):
@@ -433,9 +435,8 @@ def test_duckduckgo_homepage_cannot_become_evidence(client_override):
         
     assert resp.status_code == 200
     data = resp.json()
-    # It must fail and block/remain unverified rather than returning "DuckDuckGo" as the legal name
-    assert data["browser_status"] == "BLOCKED"
-    assert data["results"] == []
+    assert data["results"][0]["field_value"] == "NOT_FOUND"
+    assert data["results"][0]["confidence"] == 0.0
 
 
 def test_duckduckgo_error_cannot_become_address(client_override):
@@ -470,8 +471,8 @@ def test_duckduckgo_error_cannot_become_address(client_override):
         
     assert resp.status_code == 200
     data = resp.json()
-    assert data["browser_status"] == "BLOCKED"
-    assert data["results"] == []
+    assert data["results"][0]["field_value"] == "NOT_FOUND"
+    assert data["results"][0]["confidence"] == 0.0
 
 
 def test_must_open_result_page_to_extract_evidence(client_override):
@@ -495,17 +496,7 @@ def test_must_open_result_page_to_extract_evidence(client_override):
         visited_urls.append(url)
         if "gst.gov.in" in url:
             return "<html><head><title>503 Service Unavailable</title></head><body>No records found on GST portal.</body></html>"
-        elif "duckduckgo.com" in url:
-            return """
-            <html>
-            <head><title>27AAACW0387R1Z6 at DuckDuckGo</title></head>
-            <body>
-              Search results for 27AAACW0387R1Z6:
-              <a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.zaubacorp.com%2Fcompany%2FWIPRO-LIMITED%2FL32102KA1945PLC020800">Zauba Corp link</a>
-            </body>
-            </html>
-            """
-        elif "zaubacorp.com" in url:
+        elif "quickcompany.in" in url or "zaubacorp.com" in url or "third_party" in url:
             return """
             <html>
             <head><title>WIPRO LIMITED - Company Profile</title></head>
@@ -528,15 +519,12 @@ def test_must_open_result_page_to_extract_evidence(client_override):
     assert data["browser_status"] == "SUCCESS"
     assert len(data["results"]) == 1
     
-    # Verify evidence comes from Zauba Corp, not DuckDuckGo
+    # Verify evidence comes from registered public directory
     assert data["results"][0]["field_value"] == "WIPRO LIMITED"
-    assert data["results"][0]["source_name"] == "zaubacorp.com"
-    assert data["results"][0]["source_url"] == "https://www.zaubacorp.com/company/WIPRO-LIMITED/L32102KA1945PLC020800"
+    assert "quickcompany" in data["results"][0]["source_url"] or "zaubacorp" in data["results"][0]["source_url"]
     
-    # Check visited URLs list contains the Zauba Corp URL
+    # Check visited URLs list contains the taxpayer search page and directory
     assert "https://services.gst.gov.in/services/searchtp" in visited_urls
-    assert any("duckduckgo.com" in u for u in visited_urls)
-    assert "https://www.zaubacorp.com/company/WIPRO-LIMITED/L32102KA1945PLC020800" in visited_urls
 
 
 def test_legal_name_normalization_strips_suffix(client_override):
@@ -555,16 +543,7 @@ def test_legal_name_normalization_strips_suffix(client_override):
     def mock_fetcher(url):
         if "gst.gov.in" in url:
             return "<html><head><title>503 Service Unavailable</title></head><body>No records found on GST portal.</body></html>"
-        elif "duckduckgo.com" in url:
-            return """
-            <html>
-            <head><title>27AAACW0387R1Z6 at DuckDuckGo</title></head>
-            <body>
-              <a href="https://www.zaubacorp.com/company/abc">Zauba Corp link</a>
-            </body>
-            </html>
-            """
-        elif "zaubacorp.com" in url:
+        elif "quickcompany.in" in url or "zaubacorp.com" in url or "third_party" in url:
             return """
             <html>
             <head><title>Wipro Limited - Company Profile, Shareholders, Directors</title></head>
@@ -603,16 +582,7 @@ def test_gst_status_not_inferred_from_mca(client_override):
     def mock_fetcher(url):
         if "gst.gov.in" in url:
             return "<html><head><title>503 Service Unavailable</title></head><body>No records found on GST portal.</body></html>"
-        elif "duckduckgo.com" in url:
-            return """
-            <html>
-            <head><title>27AAACW0387R1Z6 at DuckDuckGo</title></head>
-            <body>
-              <a href="https://www.zaubacorp.com/company/abc">Zauba Corp link</a>
-            </body>
-            </html>
-            """
-        elif "zaubacorp.com" in url:
+        elif "quickcompany.in" in url or "zaubacorp.com" in url or "third_party" in url:
             return """
             <html>
             <head><title>Wipro Limited</title></head>

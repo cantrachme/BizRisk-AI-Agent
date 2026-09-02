@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import uuid
@@ -8,6 +9,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+logger = logging.getLogger("bizrisk.observability")
 
 from app.graph.state import ResearchResult, ResearchTask
 from app.core.exceptions import HumanInterventionRequiredException
@@ -112,6 +115,7 @@ class BrowserResearchAgent:
                 "relevance_result": relevance_result,
                 "confidence": confidence,
                 "selected_as_evidence": selected_as_evidence,
+                "failure_reason": failure_reason,
             }
             metadata_str = json.dumps(metadata)
             
@@ -224,8 +228,15 @@ class BrowserResearchAgent:
         for src in raw_candidates:
             if src not in candidates:
                 allowed_domains = getattr(task, "allowed_domains", None)
-                if allowed_domains is not None and src not in allowed_domains:
-                    continue
+                if allowed_domains is not None:
+                    canonical_name = DISPLAY_TO_CANONICAL.get(src, src)
+                    display_name = SOURCES.get(canonical_name, (src,))[0]
+                    if (
+                        src not in allowed_domains
+                        and canonical_name not in allowed_domains
+                        and display_name not in allowed_domains
+                    ):
+                        continue
 
                 is_known = src in SOURCES or src in DISPLAY_TO_CANONICAL or source_registry.get_source(src) is not None
                 if not is_known:
@@ -268,7 +279,6 @@ class BrowserResearchAgent:
         chosen_confidence = 0.0
         chosen_page_data = None
         chosen_authority_tier = 1
-        blocked_exceptions = []
 
         attempt_order = 0
         for source in candidates:
@@ -361,6 +371,17 @@ class BrowserResearchAgent:
                 source_url=source_url,
             )
 
+            canonical_source = DISPLAY_TO_CANONICAL.get(source, source)
+            src_meta = source_registry.get_source(canonical_source) or source_registry.get_source(source)
+            logger.info(
+                "[BROWSER_RESOLVE_URL] Task=%s Source='%s' Target='%s' Resolved_URL='%s' Source_Metadata=%s",
+                task.task_id,
+                source,
+                task.target,
+                research_url,
+                src_meta.__dict__ if src_meta else None,
+            )
+
             if research_url is None:
                 self._save_browser_attempt(
                     investigation_id=investigation_id,
@@ -404,331 +425,6 @@ class BrowserResearchAgent:
             )
 
             try:
-                is_search_source = (
-                    any(engine in (research_url or "") for engine in ["duckduckgo.com", "google.com", "bing.com", "yahoo.com"])
-                    or source in {"generic_web", "third_party", "duckduckgo.com", "bing.com"}
-                    or (source == "company_website" and not BrowserResearchAgent._is_url(task.target))
-                )
-
-                if is_search_source:
-                    from urllib.parse import quote, urlparse
-                    search_query = self._build_search_query(task)
-                    encoded_query = quote(search_query.strip())
-                    search_engine_chain = []
-                    if research_url and any(engine in research_url for engine in ["duckduckgo.com", "google.com", "bing.com", "yahoo.com"]):
-                        search_engine_chain.append(research_url)
-                    standard_engines = [
-                        f"https://duckduckgo.com/?q={encoded_query}",
-                        f"https://html.duckduckgo.com/html/?q={encoded_query}",
-                        f"https://www.bing.com/search?q={encoded_query}",
-                    ]
-                    for eng in standard_engines:
-                        if eng not in search_engine_chain:
-                            search_engine_chain.append(eng)
-
-                    found_valid_result = False
-                    for engine_idx, engine_url in enumerate(search_engine_chain):
-                        parsed_eng = urlparse(engine_url)
-                        eng_domain = parsed_eng.netloc.replace("www.", "")
-                        eng_name = (
-                            "DuckDuckGo HTML" if "html.duckduckgo.com" in engine_url
-                            else ("DuckDuckGo" if "duckduckgo" in eng_domain
-                            else ("Bing Search" if "bing" in eng_domain else eng_domain))
-                        )
-                        self._record_browser_event(
-                            investigation_id=investigation_id,
-                            task_id=task.task_id,
-                            event_type="SEARCHING",
-                            status="IN_PROGRESS",
-                            source_name=eng_name,
-                            url=engine_url,
-                            message=f"Searching {eng_name} with query: {search_query}",
-                        )
-
-                        engine_html = None
-                        live_session = None
-                        try:
-                            if use_live_session:
-                                from app.core.browser_session_manager import browser_session_manager
-                                live_session = browser_session_manager.get_session(investigation_id, task.task_id, source)
-                                if not live_session:
-                                    live_session = browser_session_manager.start_session(investigation_id, task.task_id, source)
-                                live_session.goto(engine_url)
-                                engine_html = live_session.content()
-                            else:
-                                engine_html = self.fetcher(engine_url)
-                        except Exception as engine_err:
-                            self._save_browser_attempt(
-                                investigation_id=investigation_id,
-                                task=task,
-                                source_name=eng_name,
-                                source=eng_domain,
-                                url=engine_url,
-                                attempt_order=attempt_order,
-                                started_at=started_at,
-                                completed_at=datetime.now(timezone.utc),
-                                status="ERROR",
-                                http_result="Fetch Exception",
-                                title=None,
-                                text_length=0,
-                                relevance_result=None,
-                                failure_reason=f"Search engine fetch failed: {engine_err}",
-                                confidence=0.0,
-                                selected_as_evidence=False,
-                            )
-                            attempt_order += 1
-                            continue
-
-                        intervention = detect_human_intervention(engine_html)
-                        is_blocked_page = bool(intervention) or any(kw in engine_html.lower() for kw in ["protection. privacy. peace of mind", "privacy error", "anonymized error code"])
-                        raw_result_urls = self._extract_search_results(engine_html)
-                        scored_candidates = []
-                        for u in raw_result_urls:
-                            cand_score, cand_reason, cand_rel = self._score_candidate_url(u, task.target, task.task_type)
-                            if cand_score >= 0.40:
-                                scored_candidates.append((u, cand_score, cand_rel, cand_reason))
-                        scored_candidates.sort(key=lambda x: x[1], reverse=True)
-                        candidates_to_navigate = scored_candidates[:3]
-
-                        if not candidates_to_navigate:
-                            import sys
-                            is_valid_mock_test = (
-                                "pytest" in sys.modules
-                                and not raw_result_urls
-                                and not is_blocked_page
-                                and not self._is_failed_or_blocked_retrieval(engine_html, task.target)
-                            )
-                            if is_valid_mock_test:
-                                page_data = self._extract_page_data(engine_html)
-                                found_valid_result = True
-                                chosen_source = source_name
-                                chosen_url = None if source == "third_party" else engine_url
-                                chosen_confidence = confidence
-                                chosen_page_data = page_data
-                                chosen_page_data["url"] = chosen_url
-                                chosen_page_data["relationship"] = "TARGET_ENTITY"
-                                self._save_browser_attempt(
-                                    investigation_id=investigation_id,
-                                    task=task,
-                                    source_name=source_name,
-                                    source=source,
-                                    url=engine_url,
-                                    attempt_order=attempt_order,
-                                    started_at=started_at,
-                                    completed_at=datetime.now(timezone.utc),
-                                    status="SUCCESS",
-                                    http_result="200 OK",
-                                    title=page_data.get("title"),
-                                    text_length=len(page_data.get("text", "")),
-                                    relevance_result="PASSED",
-                                    failure_reason=None,
-                                    confidence=confidence,
-                                    selected_as_evidence=True,
-                                )
-                                break
-
-                            self._save_browser_attempt(
-                                investigation_id=investigation_id,
-                                task=task,
-                                source_name=eng_name,
-                                source=eng_domain,
-                                url=engine_url,
-                                attempt_order=attempt_order,
-                                started_at=started_at,
-                                completed_at=datetime.now(timezone.utc),
-                                status="BLOCKED" if is_blocked_page else "NO_RESULTS",
-                                http_result="Bot Challenge" if is_blocked_page else "No relevant candidate URLs found",
-                                title=None,
-                                text_length=len(engine_html) if engine_html else 0,
-                                relevance_result="HUMAN_INTERVENTION_REQUIRED" if is_blocked_page else "NO_RESULTS",
-                                failure_reason=f"No relevant candidate links on {eng_name}",
-                                confidence=0.0,
-                                selected_as_evidence=False,
-                            )
-                            attempt_order += 1
-                            continue
-
-                        self._save_browser_attempt(
-                            investigation_id=investigation_id,
-                            task=task,
-                            source_name=eng_name,
-                            source=eng_domain,
-                            url=engine_url,
-                            attempt_order=attempt_order,
-                            started_at=started_at,
-                            completed_at=datetime.now(timezone.utc),
-                            status="SUCCESS",
-                            http_result="200 OK",
-                            title=f"{task.target} at {eng_name}",
-                            text_length=len(engine_html),
-                            relevance_result="SEARCH_RESULTS_RETURNED",
-                            failure_reason=None,
-                            confidence=0.0,
-                            selected_as_evidence=False,
-                        )
-                        attempt_order += 1
-
-                        for res_url, cand_score, expected_rel, cand_reason in candidates_to_navigate:
-                            cand_started_at = datetime.now(timezone.utc)
-                            parsed_res = urlparse(res_url)
-                            res_domain = parsed_res.netloc.replace("www.", "") or "candidate_page"
-                            self._record_browser_event(
-                                investigation_id=investigation_id,
-                                task_id=task.task_id,
-                                event_type="NAVIGATING",
-                                status="IN_PROGRESS",
-                                source_name=res_domain,
-                                url=res_url,
-                                message=f"Opening validated candidate: {res_url}",
-                            )
-
-                            res_html = None
-                            try:
-                                if use_live_session and live_session:
-                                    live_session.goto(res_url)
-                                    res_html = live_session.content()
-                                else:
-                                    res_html = self.fetcher(res_url)
-                            except Exception as cand_err:
-                                self._save_browser_attempt(
-                                    investigation_id=investigation_id,
-                                    task=task,
-                                    source_name=res_domain,
-                                    source=res_domain,
-                                    url=res_url,
-                                    attempt_order=attempt_order,
-                                    started_at=cand_started_at,
-                                    completed_at=datetime.now(timezone.utc),
-                                    status="ERROR",
-                                    http_result="Fetch Exception",
-                                    title=None,
-                                    text_length=0,
-                                    relevance_result=None,
-                                    failure_reason=str(cand_err),
-                                    confidence=0.0,
-                                    selected_as_evidence=False,
-                                )
-                                attempt_order += 1
-                                continue
-
-                            cand_intervention = detect_human_intervention(res_html)
-                            if cand_intervention:
-                                self._save_browser_attempt(
-                                    investigation_id=investigation_id,
-                                    task=task,
-                                    source_name=res_domain,
-                                    source=res_domain,
-                                    url=res_url,
-                                    attempt_order=attempt_order,
-                                    started_at=cand_started_at,
-                                    completed_at=datetime.now(timezone.utc),
-                                    status="BLOCKED",
-                                    http_result="Human Intervention Required",
-                                    title=None,
-                                    text_length=0,
-                                    relevance_result="HUMAN_INTERVENTION_REQUIRED",
-                                    failure_reason=f"Human intervention type: {cand_intervention}",
-                                    confidence=0.0,
-                                    selected_as_evidence=False,
-                                )
-                                attempt_order += 1
-                                continue
-
-                            cand_failure = self._is_failed_or_blocked_retrieval(res_html, task.target)
-                            if cand_failure:
-                                self._save_browser_attempt(
-                                    investigation_id=investigation_id,
-                                    task=task,
-                                    source_name=res_domain,
-                                    source=res_domain,
-                                    url=res_url,
-                                    attempt_order=attempt_order,
-                                    started_at=cand_started_at,
-                                    completed_at=datetime.now(timezone.utc),
-                                    status=cand_failure,
-                                    http_result="Failed Relevance Check",
-                                    title=None,
-                                    text_length=0,
-                                    relevance_result=cand_failure,
-                                    failure_reason=f"Classification: {cand_failure}",
-                                    confidence=0.0,
-                                    selected_as_evidence=False,
-                                )
-                                attempt_order += 1
-                                continue
-
-                            cand_page_data = self._extract_page_data(res_html)
-                            cand_page_data["url"] = res_url
-                            actual_rel = self._classify_entity_relationship(
-                                target=task.target,
-                                domain=res_domain,
-                                page_title=cand_page_data.get("title") or "",
-                                page_text=cand_page_data.get("text") or ""
-                            )
-                            cand_page_data["relationship"] = actual_rel
-
-                            if task.task_type == "WEBSITE_VERIFICATION" and actual_rel in {"PARENT_ENTITY", "UNRELATED", "BRAND"}:
-                                self._save_browser_attempt(
-                                    investigation_id=investigation_id,
-                                    task=task,
-                                    source_name=res_domain,
-                                    source=res_domain,
-                                    url=res_url,
-                                    attempt_order=attempt_order,
-                                    started_at=cand_started_at,
-                                    completed_at=datetime.now(timezone.utc),
-                                    status="REJECTED",
-                                    http_result="Entity Mismatch",
-                                    title=cand_page_data.get("title"),
-                                    text_length=len(cand_page_data.get("text") or ""),
-                                    relevance_result="PARENT_OR_UNRELATED_ENTITY",
-                                    failure_reason=f"Website represents {actual_rel}, not direct target entity",
-                                    confidence=0.0,
-                                    selected_as_evidence=False,
-                                )
-                                attempt_order += 1
-                                continue
-
-                            cand_confidence = confidence
-                            if task.task_type == "WEBSITE_VERIFICATION":
-                                cand_confidence = 0.85 if actual_rel == "TARGET_ENTITY" else 0.50
-                            elif task.task_type in {"MCA_VERIFICATION", "EPFO_VERIFICATION"}:
-                                cand_confidence = 0.75
-
-                            self._save_browser_attempt(
-                                investigation_id=investigation_id,
-                                task=task,
-                                source_name=res_domain,
-                                source=res_domain,
-                                url=res_url,
-                                attempt_order=attempt_order,
-                                started_at=cand_started_at,
-                                completed_at=datetime.now(timezone.utc),
-                                status="SUCCESS",
-                                http_result="200 OK",
-                                title=cand_page_data.get("title"),
-                                text_length=len(cand_page_data.get("text", "")),
-                                relevance_result="PASSED",
-                                failure_reason=None,
-                                confidence=cand_confidence,
-                                selected_as_evidence=True,
-                            )
-                            chosen_source = res_domain
-                            chosen_url = res_url
-                            chosen_confidence = cand_confidence
-                            chosen_page_data = cand_page_data
-                            chosen_authority_tier = tier
-                            found_valid_result = True
-                            break
-
-                        if found_valid_result:
-                            break
-
-                    if found_valid_result:
-                        break
-                    continue
-
-                # Direct URL / Official Portal Source Fetch
                 html = None
                 if use_live_session:
                     from app.core.browser_session_manager import browser_session_manager
@@ -756,7 +452,10 @@ class BrowserResearchAgent:
                             html = live_session.content()
                         except Exception as e:
                             browser_session_manager.close_session(investigation_id, task.task_id, source)
-                            raise e
+                            try:
+                                html = self.fetcher(research_url)
+                            except Exception:
+                                raise e
                 else:
                     html = self.fetcher(research_url)
 
@@ -780,23 +479,64 @@ class BrowserResearchAgent:
                         attempt_order=attempt_order,
                         started_at=started_at,
                         completed_at=datetime.now(timezone.utc),
-                        status="BLOCKED",
-                        http_result="Human Intervention Required",
+                        status="BLOCKED_OR_ERROR",
+                        http_result="Bot Challenge",
                         title=None,
-                        text_length=0,
-                        relevance_result="HUMAN_INTERVENTION_REQUIRED",
-                        failure_reason=f"Human intervention type: {intervention_type}",
+                        text_length=len(html or ""),
+                        relevance_result="BLOCKED_OR_ERROR",
+                        failure_reason=f"Verification challenge detected: {intervention_type}",
                         confidence=0.0,
                         selected_as_evidence=False,
                     )
-                    ex = HumanInterventionRequiredException(
-                        message=f"Human intervention required: {intervention_type}",
-                        intervention_type=intervention_type
-                    )
-                    if source in task.preferred_sources and any(gov in (source_url or research_url or source) for gov in ["gst.gov.in", "mca.gov.in", "epfindia.gov.in", "services.gst.gov.in"]):
-                        raise ex
-                    blocked_exceptions.append(ex)
                     continue
+
+                # Directory link discovery: if on a third-party source and candidate company links exist, resolve the exact profile URL
+                if html and (source in {"quickcompany.in", "tofler.in", "zaubacorp.com", "instafinancials.com", "third_party", "generic_web"} or "company" in str(source_url or "").lower()):
+                    try:
+                        parsed_domain = urlparse(research_url).netloc.lower().replace("www.", "")
+                        raw_hrefs = re.findall(r'href=["\']([^"\'#?]+(?:/[^"\'#?]+)*)["\']', html, re.IGNORECASE)
+                        cand_links = []
+                        for href in raw_hrefs:
+                            if any(pattern in href.lower() for pattern in ["/company/", "/companysearchresults/", "/gstin/"]):
+                                full_url = href if href.startswith("http") else f"https://www.{parsed_domain}/{href.lstrip('/')}"
+                                if parsed_domain in full_url.lower() and full_url not in cand_links and full_url != research_url:
+                                    cand_links.append(full_url)
+
+                        logger.info(
+                            "[BROWSER_LINK_DISCOVERY] Task=%s Initial_URL='%s' Candidate_URLs=%s",
+                            task.task_id,
+                            research_url,
+                            cand_links,
+                        )
+
+                        if cand_links:
+                            scored_cands = []
+                            for link in cand_links:
+                                sc, _, rel = score_candidate_url(link, task.target, task.task_type)
+                                if sc >= 0.40 or rel in {"TARGET_ENTITY", "RELATED_ENTITY"}:
+                                    scored_cands.append((sc, link))
+
+                            logger.info(
+                                "[BROWSER_LINK_SCORING] Task=%s Candidate_Scores=%s",
+                                task.task_id,
+                                scored_cands,
+                            )
+
+                            if scored_cands:
+                                scored_cands.sort(key=lambda x: x[0], reverse=True)
+                                best_candidate_url = scored_cands[0][1]
+                                sub_html = self.fetcher(best_candidate_url)
+                                if sub_html and not detect_bot_or_captcha(sub_html) and not self._is_failed_or_blocked_retrieval(sub_html, task.target):
+                                    html = sub_html
+                                    research_url = best_candidate_url
+                    except Exception:
+                        pass
+
+                logger.info(
+                    "[BROWSER_SELECTED_URL] Task=%s Final_Selected_URL='%s'",
+                    task.task_id,
+                    research_url,
+                )
 
                 failure_reason = self._is_failed_or_blocked_retrieval(html, task.target)
                 if failure_reason:
@@ -812,16 +552,54 @@ class BrowserResearchAgent:
                         status=failure_reason,
                         http_result="Failed Relevance or Blocked check",
                         title=None,
-                        text_length=0,
+                        text_length=len(html or "") if html else 0,
                         relevance_result=failure_reason,
                         failure_reason=f"Classification: {failure_reason}",
                         confidence=0.0,
                         selected_as_evidence=False,
                     )
+                    if use_live_session:
+                        from app.core.browser_session_manager import browser_session_manager
+                        browser_session_manager.close_session(investigation_id, task.task_id, source)
                     continue
 
                 # Page succeeded
                 page_data = self._extract_page_data(html)
+                cand_confidence = confidence
+                if task.task_type == "WEBSITE_VERIFICATION":
+                    parsed_domain = urlparse(research_url).netloc.replace("www.", "")
+                    actual_rel = self._classify_entity_relationship(
+                        target=task.target,
+                        domain=parsed_domain,
+                        page_title=page_data.get("title") or "",
+                        page_text=page_data.get("text") or "",
+                    )
+                    page_data["relationship"] = actual_rel
+                    if actual_rel not in {"TARGET_ENTITY", "RELATED_ENTITY"}:
+                        self._save_browser_attempt(
+                            investigation_id=investigation_id,
+                            task=task,
+                            source_name=source_name,
+                            source=source,
+                            url=research_url,
+                            attempt_order=attempt_order,
+                            started_at=started_at,
+                            completed_at=datetime.now(timezone.utc),
+                            status="REJECTED",
+                            http_result="Entity Mismatch",
+                            title=page_data.get("title"),
+                            text_length=len(page_data.get("text") or ""),
+                            relevance_result="ENTITY_MISMATCH",
+                            failure_reason=f"Website represents {actual_rel}, not direct target entity",
+                            confidence=0.0,
+                            selected_as_evidence=False,
+                        )
+                        if use_live_session:
+                            from app.core.browser_session_manager import browser_session_manager
+                            browser_session_manager.close_session(investigation_id, task.task_id, source)
+                        continue
+                    cand_confidence = 0.85 if actual_rel == "TARGET_ENTITY" else 0.50
+
                 self._save_browser_attempt(
                     investigation_id=investigation_id,
                     task=task,
@@ -837,13 +615,13 @@ class BrowserResearchAgent:
                     text_length=len(page_data.get("text", "")),
                     relevance_result="PASSED",
                     failure_reason=None,
-                    confidence=confidence,
+                    confidence=cand_confidence,
                     selected_as_evidence=True,
                 )
 
                 chosen_source = source_name
-                chosen_url = source_url if source_url else research_url
-                chosen_confidence = confidence
+                chosen_url = research_url if research_url else source_url
+                chosen_confidence = cand_confidence
                 chosen_page_data = page_data
                 chosen_page_data["url"] = research_url
                 chosen_authority_tier = tier
@@ -852,12 +630,8 @@ class BrowserResearchAgent:
                     browser_session_manager.close_session(investigation_id, task.task_id, source)
                 break
 
-            except HumanInterventionRequiredException as block_ex:
-                if source in task.preferred_sources and any(gov in (source_url or research_url or source) for gov in ["gst.gov.in", "mca.gov.in", "epfindia.gov.in", "services.gst.gov.in"]):
-                    raise block_ex
-                blocked_exceptions.append(block_ex)
-                continue
             except Exception as ex:
+                failure_msg = f"{type(ex).__name__}: {ex}"
                 self._save_browser_attempt(
                     investigation_id=investigation_id,
                     task=task,
@@ -872,16 +646,19 @@ class BrowserResearchAgent:
                     title=None,
                     text_length=0,
                     relevance_result=None,
-                    failure_reason=str(ex),
+                    failure_reason=failure_msg,
                     confidence=0.0,
                     selected_as_evidence=False,
                 )
+                if use_live_session:
+                    try:
+                        from app.core.browser_session_manager import browser_session_manager
+                        browser_session_manager.close_session(investigation_id, task.task_id, source)
+                    except Exception:
+                        pass
                 continue
 
         if chosen_page_data is None:
-            if blocked_exceptions:
-                raise blocked_exceptions[0]
-
             source = candidates[0] if candidates else "public_source"
             if source in SOURCES:
                 source_name, source_url, _ = SOURCES[source]
@@ -910,7 +687,7 @@ class BrowserResearchAgent:
             )
 
             field_confidence = chosen_confidence
-            if isinstance(val, str) and val in {"NOT_FOUND", "UNAVAILABLE", "SOURCE_UNAVAILABLE"} and task.target != "27ABCDE1234F1Z5":
+            if isinstance(val, str) and val in {"NOT_FOUND", "UNAVAILABLE", "SOURCE_UNAVAILABLE"}:
                 field_confidence = 0.0
 
             if chosen_confidence == 0.0 or not chosen_page_data.get("text"):
@@ -1044,8 +821,22 @@ class BrowserResearchAgent:
 
     @staticmethod
     def _resolve_url(task: ResearchTask, source: str, source_url: str | None) -> str | None:
-        target = task.target.strip()
+        target = (task.target or "").strip()
         canonical_source = DISPLAY_TO_CANONICAL.get(source, source)
+
+        # 1. First consult Source Registry metadata for dynamic resolution
+        meta = source_registry.get_source(canonical_source) or source_registry.get_source(source)
+        if meta and hasattr(meta, "resolve_target_url"):
+            resolved = meta.resolve_target_url(target, task_type=task.task_type)
+            if resolved:
+                return resolved
+
+        # 2. Extract identifiers
+        cin_match = re.search(r"\b([UL][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6})\b", target.upper())
+        gstin_match = re.search(r"\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})\b", target.upper())
+        cin = cin_match.group(1) if cin_match else None
+        gstin = gstin_match.group(1) if gstin_match else None
+        clean_target = re.sub(r"[^a-zA-Z0-9\s-]", "", target).strip().replace(" ", "-")
 
         if canonical_source == "gst.gov.in":
             return "https://services.gst.gov.in/services/searchtp"
@@ -1059,23 +850,31 @@ class BrowserResearchAgent:
             clean_name = re.sub(r"(?i)\s+(?:official\s*website|website|in\s*india|company\s*registration|pvt|ltd|limited|private|llp|corp|inc)\b", "", target).strip()
             clean_slug = re.sub(r"[^a-zA-Z0-9]", "", clean_name).lower()
             return f"https://www.{clean_slug}.com" if clean_slug else None
+
         if canonical_source in {"generic_web", "third_party"}:
             if is_url(target):
                 return target if "://" in target else f"https://{target}"
-            query_str = BrowserResearchAgent._build_search_query(task)
-            import urllib.parse
-            encoded_query = urllib.parse.quote_plus(query_str)
-            return f"https://duckduckgo.com/html/?q={encoded_query}"
+            if "zaubacorp" in str(source_url or canonical_source).lower():
+                return f"https://www.zaubacorp.com/company/{cin or clean_target}" if (cin or clean_target) else source_url
+            return f"https://www.quickcompany.in/company/{cin or gstin or clean_target}" if (cin or gstin or clean_target) else source_url
+
         if canonical_source in {"quickcompany.in", "tofler.in", "zaubacorp.com", "instafinancials.com"}:
             if is_url(target):
                 return target if "://" in target else f"https://{target}"
-            clean_target = re.sub(r"[^a-zA-Z0-9\s-]", "", target).strip().replace(" ", "-")
-            return f"https://www.quickcompany.in/company/{clean_target}"
+            clean_domain = canonical_source.replace("https://", "").replace("http://", "").rstrip("/").replace("www.", "")
+            if "zaubacorp" in canonical_source:
+                if cin and clean_target:
+                    clean_name = re.sub(r"(?i)\b" + re.escape(cin) + r"\b", "", clean_target).strip("-")
+                    if clean_name:
+                        return f"https://www.zaubacorp.com/company/{clean_name}/{cin}"
+                return f"https://www.zaubacorp.com/company/{cin or clean_target}" if (cin or clean_target) else source_url
+            return f"https://www.{clean_domain}/company/{cin or gstin or clean_target}" if (cin or gstin or clean_target) else source_url
+
         return source_url
 
     @staticmethod
     def _build_search_query(task: ResearchTask) -> str:
-        target = task.target.strip()
+        target = (task.target or "").strip()
         gstin_match = re.search(r"\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})\b", target)
         cin_match = re.search(r"\b([UL][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6})\b", target)
         gstin = gstin_match.group(1) if gstin_match else None
@@ -1105,8 +904,8 @@ class BrowserResearchAgent:
         raw_hrefs = re.findall(r'href=["\']((?:https?:)?//[^"\']+|/l/\?[^"\']+|/html/\?[^"\']+|/lite/\?[^"\']+|/url\?[^"\']+|/y\.js\?[^"\']+)["\']', html, re.IGNORECASE)
         urls = []
         for href in raw_hrefs:
-            if "uddg=" in href:
-                match = re.search(r'uddg=([^&"\']+)', href)
+            if "uddg=" in href or "url?q=" in href or "/url?q=" in href:
+                match = re.search(r'(?:uddg|url\?q)=([^&"\']+)', href)
                 if match:
                     import urllib.parse
                     decoded = urllib.parse.unquote(match.group(1))
@@ -1281,9 +1080,9 @@ class BrowserResearchAgent:
                         cand = clean_legal_name_candidate(match.group(1).strip())
                         if cand:
                             return cand, f"Extracted company name from line: '{line}'"
-                if cleaned_title and cleaned_title.lower() != task.target.lower():
+                if cleaned_title:
                     return cleaned_title, "Normalized company name from page title"
-                if task.task_type in {"ENTITY_DISCOVERY", "GENERAL_WEB_RESEARCH"}:
+                if task.task_type in {"ENTITY_DISCOVERY", "GENERAL_WEB_RESEARCH", "THIRD_PARTY_RESEARCH"}:
                     return task.target, "Target company name used directly"
                 return "NOT_FOUND", "No valid company name title extracted"
 
@@ -1337,9 +1136,9 @@ class BrowserResearchAgent:
                 allowed = True
             elif task.task_type == "EPFO_VERIFICATION" and field_name == "epfo_code":
                 allowed = True
-            elif task.task_type == "WEBSITE_VERIFICATION" and field_name == "website":
+            elif task.task_type == "WEBSITE_VERIFICATION" and field_name in {"website", "website_url", "domain", "candidate_domain", "page_title", "title"}:
                 allowed = True
-            elif task.task_type == "GENERAL_WEB_RESEARCH" and field_name in {"company_name", "business_name", "legal_name"}:
+            elif task.task_type in {"GENERAL_WEB_RESEARCH", "THIRD_PARTY_RESEARCH"} and field_name in {"company_name", "business_name", "legal_name"}:
                 allowed = True
                 
             if not allowed:

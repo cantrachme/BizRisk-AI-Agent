@@ -106,11 +106,13 @@ def test_scenario_a_gst_captcha(agent, investigation_id):
         return "<html><body>Please solve the captcha below to proceed.</body></html>"
         
     agent.fetcher = mock_fetcher
-    with pytest.raises(HumanInterventionRequiredException):
-        agent.execute(investigation_id=investigation_id, task=task)
+    results = agent.execute(investigation_id=investigation_id, task=task)
+    assert len(results) == 3
+    assert all(r.confidence == 0.0 for r in results)
+    assert all(r.field_value in {"NOT_FOUND", "UNAVAILABLE"} for r in results)
 
 
-# TEST B: GST CAPTCHA -> DuckDuckGo -> ZaubaCorp
+# TEST B: GST CAPTCHA -> Fallback to ZaubaCorp directly
 def test_scenario_b_gst_captcha_fallback_ddg(agent, investigation_id):
     task = ResearchTask(
         task_id="TASK-B",
@@ -126,21 +128,25 @@ def test_scenario_b_gst_captcha_fallback_ddg(agent, investigation_id):
     def mock_fetcher(url):
         if "gst.gov.in" in url:
             return "<html><body>please verify you are human (captcha)</body></html>"
-        elif "duckduckgo.com" in url:
+        elif "zaubacorp.com" in url:
             return """
             <html>
+              <head><title>Wipro Limited - Profile</title></head>
               <body>
-                <a href="https://duckduckgo.com/y.js?uddg=https%3A%2F%2Fwww.zaubacorp.com%2Fcompany%2FWipro-Limited%2F27AAACW0387R1Z6">Zauba Link</a>
+                Target identifier match: 27AAACW0387R1Z6.
+                Legal Name: Wipro Limited.
+                Company Status: Active.
               </body>
             </html>
             """
         return ""
         
     agent.fetcher = mock_fetcher
-    with pytest.raises(HumanInterventionRequiredException) as exc_info:
-        agent.execute(investigation_id=investigation_id, task=task)
-    
-    assert exc_info.value.intervention_type == "CAPTCHA"
+    results = agent.execute(investigation_id=investigation_id, task=task)
+    legal_name_res = next(r for r in results if r.field_name == "legal_name")
+    assert legal_name_res.field_value == "Wipro Limited"
+    assert legal_name_res.source_name == "zaubacorp.com"
+    assert legal_name_res.confidence == 0.50
 
 
 # TEST C: ZaubaCorp page says "Company Status: Active" -> gst_status remains UNAVAILABLE
@@ -459,19 +465,18 @@ def test_scenario_j_unblocked_task_continues(db_session, investigation_id):
         with mock.patch("app.db.session.SessionLocal", MockSessionLocal):
             next_state = browser_node(state)
             
-            # Unblocked continues
-            assert next_state["status"] == "WAITING_FOR_USER"
-            t1 = next(t for t in next_state["pending_tasks"] if t.task_id == "TASK-J1")
-            assert t1.status == "HUMAN_INTERVENTION_REQUIRED"
+            # Both tasks complete autonomously (J1 as unverified, J2 as verified)
+            assert len(next_state["completed_tasks"]) == 2
+            t1 = next(t for t in next_state["completed_tasks"] if t.task_id == "TASK-J1")
+            assert t1.status == "COMPLETED"
             
-            # MCA task finished and moved to completed_tasks
             t2 = next(t for t in next_state["completed_tasks"] if t.task_id == "TASK-J2")
             assert t2.status == "COMPLETED"
     finally:
         BrowserResearchAgent._fetch_page = original_fetcher
 
 
-# TEST K: Search result points to irrelevant website -> Reject and try next
+# TEST K: Direct directory result is irrelevant -> Reject and try next registered fallback
 def test_scenario_k_irrelevant_result_ignored(agent, investigation_id):
     task = ResearchTask(
         task_id="TASK-K",
@@ -479,22 +484,13 @@ def test_scenario_k_irrelevant_result_ignored(agent, investigation_id):
         target="27AAACW0387R1Z6",
         objective="Verify GST status",
         required_fields=["legal_name"],
-        preferred_sources=["duckduckgo.com"],
+        preferred_sources=["unrelated.com"],
         fallback_sources=["zaubacorp.com"],
         priority=1,
     )
     
     def mock_fetcher(url):
-        if "duckduckgo.com" in url:
-            return """
-            <html>
-              <body>
-                <a href="https://duckduckgo.com/y.js?uddg=https%3A%2F%2Fwww.irrelevant.com%2Fprofile">Irrelevant Candidate</a>
-                <a href="https://duckduckgo.com/y.js?uddg=https%3A%2F%2Fwww.zaubacorp.com%2Fcompany%2Fmatching%2F27AAACW0387R1Z6">Matching Candidate</a>
-              </body>
-            </html>
-            """
-        elif "irrelevant.com" in url:
+        if "unrelated.com" in url:
             return """
             <html>
               <head><title>Irrelevant Company Profile</title></head>
@@ -540,8 +536,6 @@ def test_scenario_l_network_timeout(agent, investigation_id):
     def mock_fetcher(url):
         if "timeout.com" in url:
             raise Exception("Connection timed out (mock error)")
-        elif "duckduckgo.com" in url:
-            return '<html><body><a href="https://duckduckgo.com/y.js?uddg=https%3A%2F%2Fwww.zaubacorp.com%2Fcompany%2FWipro-Limited%2F27AAACW0387R1Z6">Zauba Link</a></body></html>'
         else:
             return """
             <html>
@@ -552,7 +546,6 @@ def test_scenario_l_network_timeout(agent, investigation_id):
               </body>
             </html>
             """
-            
             
     agent.fetcher = mock_fetcher
     results = agent.execute(investigation_id=investigation_id, task=task)
@@ -577,15 +570,26 @@ def test_scenario_m_intermediate_fallback_captcha(agent, db_session, investigati
     def mock_fetcher(url):
         if "timeout.com" in url:
             return "<html><title>CAPTCHA challenge</title><body>Please solve the cloudflare verification.</body></html>"
+        elif "zaubacorp.com" in url:
+            return """
+            <html>
+              <head><title>Wipro Limited</title></head>
+              <body>
+                Target match: 27AAACW0387R1Z6.
+                Legal Name: Wipro Limited.
+              </body>
+            </html>
+            """
         return ""
 
     agent.fetcher = mock_fetcher
-    with pytest.raises(HumanInterventionRequiredException) as exc_info:
-        agent.execute(investigation_id=investigation_id, task=task)
-    assert exc_info.value.intervention_type == "CAPTCHA"
+    results = agent.execute(investigation_id=investigation_id, task=task)
+    legal_name_res = next(r for r in results if r.field_name == "legal_name")
+    assert legal_name_res.field_value == "Wipro Limited"
+    assert legal_name_res.source_name == "zaubacorp.com"
 
 
-# TEST N: Complex redirect chain tracking and decoding
+# TEST N: Deterministic directory retrieval
 def test_scenario_n_complex_redirect_chains(agent, investigation_id):
     task = ResearchTask(
         task_id="TASK-N",
@@ -593,22 +597,13 @@ def test_scenario_n_complex_redirect_chains(agent, investigation_id):
         target="27AAACW0387R1Z6",
         objective="Verify details",
         required_fields=["legal_name"],
-        preferred_sources=["duckduckgo.com"],
+        preferred_sources=["zaubacorp.com"],
         fallback_sources=[],
         priority=1,
     )
 
     def mock_fetcher(url):
-        if "duckduckgo.com" in url:
-            # Complex redirect parameters in search engine candidate link
-            return """
-            <html>
-              <body>
-                <a href="https://duckduckgo.com/y.js?uddg=https%3A%2F%2Fwww.zaubacorp.com%2Fcompany%2FWipro-Limited%2F27AAACW0387R1Z6&rut=a1c3d5f9&t=ddg_track">Link</a>
-              </body>
-            </html>
-            """
-        elif "zaubacorp.com" in url:
+        if "zaubacorp.com" in url:
             return """
             <html>
               <head><title>Wipro Limited</title></head>

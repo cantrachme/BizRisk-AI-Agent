@@ -148,6 +148,11 @@ class CompanyWebsiteResearchProvider(BaseResearchProvider):
                 return "UNAVAILABLE", "Website not accessible or returned empty content"
             return "AVAILABLE", "Official company website accessible and active"
 
+        if field_name in {"page_title", "title"}:
+            if title:
+                return title, "Extracted official website page title"
+            return "NOT_FOUND", "No page title found on company website"
+
         if field_name in {"website_url", "website", "domain"}:
             if url:
                 return url, "Verified official company website URL"

@@ -146,6 +146,10 @@ class McaResearchProvider(BaseResearchProvider):
         if "tofler" in src_lower:
             return f"https://www.tofler.in/company/{cin or clean_target}"
         if "zaubacorp" in src_lower:
+            if cin and clean_target:
+                clean_name = re.sub(r"(?i)\b" + re.escape(cin) + r"\b", "", clean_target).strip("-")
+                if clean_name:
+                    return f"https://www.zaubacorp.com/company/{clean_name}/{cin}"
             return f"https://www.zaubacorp.com/company/{cin or clean_target}"
         if "instafinancials" in src_lower:
             return f"https://www.instafinancials.com/company/{cin or clean_target}"

@@ -64,7 +64,13 @@ def detect_bot_or_captcha(html: str | None) -> str | None:
 
     html_lower = html.lower()
 
-    # 1. CAPTCHA Check
+    # 1. Obvious Bot Challenges
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
+    if title_match:
+        title_text = title_match.group(1).lower()
+        if any(w in title_text for w in ["captcha", "robot verification", "verify you are human", "attention required", "security check"]):
+            return "CAPTCHA"
+
     captcha_patterns = [
         r"recaptcha",
         r"hcaptcha",
@@ -74,48 +80,53 @@ def detect_bot_or_captcha(html: str | None) -> str | None:
         r"robot check",
         r"prove you're not a robot",
         r"please solve the captcha",
-        r"solve the captcha below",
+        r"solve the captcha",
         r"security check to proceed",
         r"complete the captcha",
+        r"cf-browser-verification",
+        r"cf-im-under-attack",
         r"distribute captcha",
-        r"captcha",
+        r"enter captcha",
+        r"captcha code",
+        r"captcha image",
+        r"name=['\"]captcha['\"]",
+        r"id=['\"]captcha['\"]",
     ]
-    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
-    if title_match:
-        title_text = title_match.group(1).lower()
-        if "captcha" in title_text or "robot verification" in title_text or "verify you are human" in title_text:
-            return "CAPTCHA"
-
     for pattern in captcha_patterns:
-        if pattern in {"recaptcha", "hcaptcha", "g-recaptcha", "captcha"}:
+        if pattern in {"recaptcha", "hcaptcha", "g-recaptcha"}:
             if pattern in html_lower:
                 return "CAPTCHA"
         else:
-            if re.search(r"\b" + re.escape(pattern) + r"\b", html_lower):
+            if re.search(pattern, html_lower):
                 return "CAPTCHA"
 
     # 2. OTP Check
     otp_patterns = [
-        r"enter otp",
-        r"enter one-time password",
-        r"one time password",
-        r"verification code sent",
-        r"enter verification code",
-        r"two-factor authentication",
-        r"2fa code",
+        r"enter\s+(?:the\s+)?(?:[0-9]-digit\s+)?otp",
+        r"please\s+enter\s+(?:the\s+)?otp",
+        r"enter\s+(?:the\s+)?one-time\s+password",
+        r"enter\s+(?:the\s+)?one\s+time\s+password",
+        r"verification\s+code\s+sent\s+to\s+your",
+        r"enter\s+verification\s+code\s+sent",
+        r"two-factor\s+authentication\s+required",
+        r"two-factor\s+authentication\s+code",
+        r"<input[^>]+name=['\"](?:otp|otp_code|verification_code)['\"]",
     ]
     for pattern in otp_patterns:
-        if re.search(r"\b" + re.escape(pattern) + r"\b", html_lower):
+        if re.search(pattern, html_lower):
             return "OTP"
 
     # 3. Login Check
     login_patterns = [
         r"login required",
         r"please log in",
+        r"please sign in",
         r"sign in to your account",
         r"authentication required",
         r"member login",
         r"sign in to proceed",
+        r"log in to continue",
+        r"sign in to continue",
     ]
     for pattern in login_patterns:
         if re.search(r"\b" + re.escape(pattern) + r"\b", html_lower):
@@ -145,10 +156,14 @@ def is_failed_or_blocked_response(html: str | None, target: str) -> str | None:
         "503 service unavailable",
         "502 bad gateway",
         "500 internal server error",
-        "cloudflare",
+        "attention required! | cloudflare",
+        "cf-browser-verification",
         "error code 1020",
         "requested url was rejected",
         "security check to proceed",
+        "duckduckgo privacy error",
+        "anonymized error code",
+        "protection. privacy. peace of mind",
     ]
     for pattern in blocked_patterns:
         if pattern in html_lower:
@@ -157,7 +172,7 @@ def is_failed_or_blocked_response(html: str | None, target: str) -> str | None:
     title_match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
     if title_match:
         title_text = title_match.group(1).lower()
-        if any(kw in title_text for kw in ["access denied", "forbidden", "attention required", "error", "unauthorized", "404", "not found", "page not found"]):
+        if any(kw in title_text for kw in ["access denied", "forbidden", "attention required", "error", "unauthorized", "404", "not found", "page not found", "duckduckgo", "bing search", "google search", "yahoo search"]):
             return "BLOCKED_OR_ERROR"
 
     no_results_patterns = [
@@ -196,7 +211,27 @@ def is_failed_or_blocked_response(html: str | None, target: str) -> str | None:
             return "IRRELEVANT_SECTOR"
 
     if len(words) >= 15:
-        if target_lower in {"27abcde1234f1z5", "27abcde1234f2z6", "mh/12345/000", "l32102ka1945plc020800", "l12345mh2020plc000001"}:
+        # Gateway portal check (Government / Authority search portals & directories)
+        portal_indicators = [
+            "search taxpayer", "goods and services tax", "gst portal", "gst services",
+            "ministry of corporate affairs", "mca services", "company master data",
+            "employees' provident fund", "epfo", "epfindia", "electronic challan",
+            "income tax department", "quickcompany", "tofler", "zauba corp", "instafinancials"
+        ]
+        if any(ind in page_text.lower() or ind in title_lower for ind in portal_indicators):
+            return None
+
+        # Exact CIN or GSTIN match in text or title
+        cin_match = re.search(r"\b([ul][0-9]{5}[a-z]{2}[0-9]{4}[a-z]{3}[0-9]{6})\b", target_lower)
+        gstin_match = re.search(r"\b([0-9]{2}[a-z]{5}[0-9]{4}[a-z]{1}[1-9a-z]{1}z[0-9a-z]{1})\b", target_lower)
+        if cin_match and (cin_match.group(1) in page_text.lower() or cin_match.group(1) in title_lower):
+            return None
+        if gstin_match and (gstin_match.group(1) in page_text.lower() or gstin_match.group(1) in title_lower):
+            return None
+
+        # Check for valid business / corporate registry signals
+        has_business_signals = any(sig in page_text.lower() for sig in ["gst status", "company status", "mca status", "legal name", "cin", "gstin", "private limited", "limited", "pvt ltd", "registered address", "incorporation date"])
+        if has_business_signals and (cin_match or gstin_match):
             return None
 
         if is_url(target_lower) or "." in target_lower or "/" in target_lower:
@@ -207,14 +242,15 @@ def is_failed_or_blocked_response(html: str | None, target: str) -> str | None:
                     domain = parsed.netloc or domain
                 except Exception:
                     pass
+            domain = domain.replace("www.", "").strip()
             domain_prefix = re.sub(r"[^a-z0-9]", "", domain.split(".")[0])
             normalized_text = re.sub(r"[^a-z0-9]", "", page_text.lower())
-            if len(domain_prefix) > 2 and domain_prefix not in normalized_text:
+            if len(domain_prefix) > 2 and domain_prefix not in normalized_text and domain_prefix not in page_title.lower():
                 return "IRRELEVANT_CONTENT"
         elif any(c.isdigit() for c in target_lower) and len(target_lower) > 5 and " " not in target_lower.strip():
             normalized_target = re.sub(r"[^a-z0-9]", "", target_lower)
             normalized_text = re.sub(r"[^a-z0-9]", "", page_text.lower())
-            if normalized_target not in normalized_text:
+            if normalized_target not in normalized_text and not has_business_signals:
                 return "IRRELEVANT_CONTENT"
         else:
             stop_words = {"limited", "pvt", "ltd", "private", "corporation", "corp", "inc", "incorporated", "co", "company", "and", "the", "official", "website", "registration", "establishment", "search", "portal", "mca", "epfo"}
@@ -270,32 +306,38 @@ def extract_address_from_text(text: str | None) -> str:
         return "NOT_FOUND"
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     address_prefixes = [
+        "registered address of", "registered office address of",
         "principal place of business", "principal place",
         "registered office address", "registered office", "registered address",
         "corporate office", "office address", "contact address", "address"
     ]
     for i, line in enumerate(lines):
         line_lower = line.lower()
-        if any(neg in line_lower for neg in ["no address", "address not", "not published", "not available", "unknown address"]):
+        if any(neg in line_lower for neg in ["no address", "address not", "not published", "not available", "unknown address", "same address", "similar address"]):
             continue
         for prefix in address_prefixes:
             if prefix in line_lower:
-                match = re.search(re.escape(prefix) + r"\s*[:\-]?\s*(.*)", line, re.IGNORECASE)
+                match = re.search(r"\b" + re.escape(prefix) + r"\s*(?:is|:|-)?\s*(.*)", line, re.IGNORECASE)
                 if match and len(match.group(1).strip()) > 5:
                     content = match.group(1).strip()
-                    content = re.split(r"(?i)\s+(?:business\s*activity|activity|gst\s*status|gstin|cin|status|incorporation|contact|phone|email|website|date\s*of\s*incorporation|pan)\b", content)[0].strip()
-                    if "." in content and len(content.split(".")[0]) > 10:
+                    content = re.sub(r"^(?:[A-Za-z0-9\s.,&()/-]+\s+is\s+|is\s+)", "", content, flags=re.IGNORECASE).strip()
+                    content = re.split(r"(?i)\s+(?:business\s*activity|activity|gst\s*status|gstin|cin|status|incorporation|registration\s*date|contact|phone|email|website|date\s*of\s*incorporation|pan)\b", content)[0].strip()
+                    if "." in content and len(content.split(".")[0]) > 8:
                         content = content.split(".")[0].strip()
-                    if content and len(content) > 5:
+                    if content and len(content) > 5 and not any(k in content.lower() for k in ["search", "company", "director", "menu"]):
                         return content
-                addr_block = [lines[j] for j in range(i, min(i + 4, len(lines)))]
-                return " | ".join(addr_block)
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1]
+                    if len(next_line) > 10 and not any(k in next_line.lower() for k in ["search", "menu", "home", "company", "director"]):
+                        return next_line
 
     indian_states = {"maharashtra", "karnataka", "delhi", "tamil nadu", "telangana", "gujarat", "west bengal", "haryana", "uttar pradesh", "mumbai", "bengaluru", "bangalore", "chennai", "hyderabad", "kolkata", "pune", "gurgaon", "noida"}
     for i, line in enumerate(lines):
         line_lower = line.lower()
+        if any(neg in line_lower for neg in ["same address", "similar address", "search", "menu"]):
+            continue
         if re.search(r"\b\d{6}\b", line) and any(state in line_lower for state in indian_states):
-            clean_line = re.sub(r"^(?:principal\s+place\s+of\s+business|registered\s+address|address|office)\s*[:\-]?", "", line, flags=re.IGNORECASE).strip()
+            clean_line = re.sub(r"^(?:registered\s+address\s+of\s+[A-Za-z0-9\s.,&()/-]+\s+is|principal\s+place\s+of\s+business|registered\s+address|address|office)\s*[:\-]?", "", line, flags=re.IGNORECASE).strip()
             if len(clean_line) > 10:
                 return clean_line
             addr_block = [lines[j] for j in range(max(0, i - 2), i + 1)]
@@ -336,7 +378,8 @@ def extract_status_from_text(text: str | None) -> str:
 def clean_legal_name_candidate(name_candidate: str | None) -> str | None:
     if not name_candidate:
         return None
-    name = name_candidate.strip()
+    import html as html_lib
+    name = html_lib.unescape(name_candidate.strip())
     name = re.sub(r"<[^>]+>", " ", name)
     name = " ".join(name.split())
 
@@ -346,6 +389,12 @@ def clean_legal_name_candidate(name_candidate: str | None) -> str | None:
         r"(?i)\s*[-|–—:]\s*Overview.*$",
         r"(?i)\s*[-|–—:]\s*MCA\s+Details.*$",
         r"(?i)\s*[-|–—:]\s*Financials.*$",
+        r"(?i)\s*[-|–—:]\s*Company\s+Registration.*$",
+        r"(?i)\s*[-|–—:]\s*Registration.*$",
+        r"(?i)\s*[-|–—:]\s*Master\s+Data.*$",
+        r"(?i)\s*[-|–—:]\s*Corporate\s+Identification.*$",
+        r"(?i)\s*[-|–—:]\s*CIN.*$",
+        r"(?i)\s*[-|–—:]\s*GSTIN.*$",
         r"(?i)\s*[-|–—:]\s*Zauba\s*Corp.*$",
         r"(?i)\s*[-|–—:]\s*Tofler.*$",
         r"(?i)\s*[-|–—:]\s*QuickCompany.*$",
@@ -381,11 +430,19 @@ def clean_legal_name_candidate(name_candidate: str | None) -> str | None:
 
     name = re.sub(r"[.\-–—:|/,\s]+$", "", name).strip()
     name_lower = name.lower()
+    portal_titles = [
+        "goods & services tax", "goods and services tax", "search taxpayer",
+        "ministry of corporate affairs", "mca services", "company master data",
+        "employees' provident fund", "epfindia", "gst portal", "mca portal", "epfo portal",
+        "search results", "companies matching", "search companies", "results for"
+    ]
     if (
         len(name) < 3
-        or name_lower.startswith(("welcome", "home", "login", "index", "about us", "online store", "online shopping", "404", "503", "502", "500", "403", "401"))
-        or name_lower in {"welcome", "home", "login", "index", "the group", "leadership", "trust", "the tata group", "welcome - online", "404 not found", "page not found", "not found", "access denied", "forbidden"}
-        or any(phrase == name_lower for phrase in ["welcome", "online store", "shopping store", "best deals", "welcome to", "404 not found", "page not found"])
+        or name_lower.startswith(("welcome", "home", "login", "index", "about us", "online store", "online shopping", "search results", "search -", "search for", "companies matching", "404", "503", "502", "500", "403", "401"))
+        or name_lower in {"welcome", "home", "login", "index", "the group", "leadership", "trust", "the tata group", "welcome - online", "404 not found", "page not found", "not found", "access denied", "forbidden", "duckduckgo", "search results", "search"}
+        or any(phrase == name_lower for phrase in ["welcome", "online store", "shopping store", "best deals", "welcome to", "404 not found", "page not found", "search results"])
+        or any(se in name_lower for se in ["duckduckgo", "bing search", "google search", "yahoo search"])
+        or any(pt in name_lower for pt in portal_titles)
     ):
         return None
 
@@ -403,6 +460,11 @@ def classify_entity_relationship(target: str, domain: str, page_title: str, page
         "http", "https", "www", "com", "org", "net", "io", "gov", "edu", "html", "htm"
     }
     target_tokens = [t for t in re.findall(r"\b[a-z0-9]+\b", target_lower) if t not in stop_words and len(t) > 2]
+
+    domain_clean = re.sub(r"^www\.", "", (domain or "").lower())
+    clean_target_url = re.sub(r"^www\.", "", target_lower.replace("https://", "").replace("http://", "").rstrip("/"))
+    if domain_clean and (domain_clean in target_lower or clean_target_url in domain_clean or clean_target_url == domain_clean or (len(target_tokens) == 1 and target_tokens[0] in domain_clean)):
+        return "TARGET_ENTITY"
 
     gstin_match = re.search(r"\b([0-9]{2}[a-z]{5}[0-9]{4}[a-z]{1}[1-9a-z]{1}z[0-9a-z]{1})\b", target_lower)
     cin_match = re.search(r"\b([ul][0-9]{5}[a-z]{2}[0-9]{4}[a-z]{3}[0-9]{6})\b", target_lower)

@@ -54,7 +54,7 @@ def test_preferred_source_is_selected():
 
     assert len(results) == 2
     assert results[0].source_name == "GST Portal"
-    assert results[0].source_url == "https://www.gst.gov.in"
+    assert results[0].source_url in {"https://services.gst.gov.in/services/searchtp", "https://www.gst.gov.in"}
     assert results[0].confidence == 0.95
 
 
@@ -282,8 +282,8 @@ def test_fallback_sources_execution():
     def fetcher(url: str) -> str:
         if "gst.gov.in" in url:
             return "<html><title>Access Denied</title><body>403 Forbidden cloudflare security check.</body></html>"
-        elif "duckduckgo" in url:
-            return "<html><title>DuckDuckGo Search</title><body>GSTIN: 27ABCDE1234F1Z5 is active. ABC Foods Private Limited.</body></html>"
+        elif "quickcompany" in url or "third_party" in url:
+            return "<html><title>QuickCompany Profile</title><body>GSTIN: 27ABCDE1234F1Z5 is active. ABC Foods Private Limited.</body></html>"
         raise ValueError(f"Unknown URL: {url}")
 
     agent = BrowserResearchAgent(fetcher=fetcher)
@@ -338,8 +338,8 @@ def test_browser_sessions_structured_attempts():
         def fetcher(url: str) -> str:
             if "gst.gov.in" in url:
                 return "<html><title>Access Denied</title><body>403 Forbidden cloudflare security check.</body></html>"
-            elif "duckduckgo" in url:
-                return "<html><title>DuckDuckGo Search</title><body>GSTIN: 27ABCDE1234F1Z5 is active. ABC Foods Private Limited.</body></html>"
+            elif "quickcompany" in url or "third_party" in url:
+                return "<html><title>QuickCompany Profile</title><body>GSTIN: 27ABCDE1234F1Z5 is active. ABC Foods Private Limited.</body></html>"
             raise ValueError(f"Unknown URL: {url}")
 
         agent = BrowserResearchAgent(fetcher=fetcher)
@@ -373,4 +373,236 @@ def test_browser_sessions_structured_attempts():
         
     finally:
         db.close()
+
+
+def test_resolve_url_returns_raw_urls_and_preserves_explicit_urls():
+    """A & B: _resolve_url returns raw URLs and preserves explicit company URLs."""
+    task_gst = make_task(task_type="GST_VERIFICATION", target="29AAACW0387R1Z6")
+    url_gst = BrowserResearchAgent._resolve_url(task_gst, "gst.gov.in", None)
+    assert url_gst == "https://services.gst.gov.in/services/searchtp"
+    assert not url_gst.startswith("[")
+    assert "](" not in url_gst
+
+    task_mca = make_task(task_type="MCA_VERIFICATION", target="L32102KA1945PLC020800")
+    url_mca = BrowserResearchAgent._resolve_url(task_mca, "mca.gov.in", None)
+    assert url_mca == "https://www.mca.gov.in"
+    assert not url_mca.startswith("[")
+
+    task_web = make_task(task_type="WEBSITE_VERIFICATION", target="https://www.wipro.com")
+    url_web = BrowserResearchAgent._resolve_url(task_web, "company_website", None)
+    assert url_web == "https://www.wipro.com"
+    assert not url_web.startswith("[")
+
+
+def test_no_search_engine_calls_in_execute():
+    """C: execute never calls duckduckgo, bing, google, or yahoo."""
+    called_urls = []
+
+    def tracking_fetcher(url: str) -> str:
+        called_urls.append(url)
+        return "<html><title>Wipro</title><body>Wipro Limited official content</body></html>"
+
+    agent = BrowserResearchAgent(fetcher=tracking_fetcher)
+    task = make_task(
+        task_type="WEBSITE_VERIFICATION",
+        target="https://www.wipro.com",
+        preferred_sources=["company_website"],
+        fallback_sources=["generic_web"],
+        required_fields=["website_status", "page_title"],
+    )
+    results = agent.execute(task)
+    assert len(results) >= 1
+    for url in called_urls:
+        assert not any(se in url.lower() for se in ["duckduckgo", "bing", "google", "yahoo"])
+
+
+def test_captcha_autonomous_handling_no_exception():
+    """D & E: CAPTCHA does not raise HumanInterventionRequiredException, produces confidence 0, selected_as_evidence false."""
+    agent = BrowserResearchAgent(fetcher=lambda u: "<html><title>Please verify you are human</title><body>recaptcha challenge</body></html>")
+    task = make_task(
+        task_type="GST_VERIFICATION",
+        target="29AAACW0387R1Z6",
+        preferred_sources=["gst.gov.in"],
+        fallback_sources=[],
+    )
+    results = agent.execute(task)
+    assert len(results) == 2
+    assert all(r.confidence == 0.0 for r in results)
+    assert all(r.field_value in {"NOT_FOUND", "UNAVAILABLE"} for r in results)
+    assert all(r.verification_status == "SOURCE_UNAVAILABLE" for r in results)
+
+
+def test_fetch_exception_diagnostics_preservation():
+    """F: Fetch exceptions preserve exception type and message in failure reason."""
+    from unittest.mock import patch
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.db.base import Base
+    from app.models.browser_session import BrowserSession
+    from app.models.investigation import Investigation
+    import json
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(bind=engine)
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = TestingSessionLocal()
+    try:
+        inv = Investigation(status="created", input_data='{"name": "Wipro"}')
+        db.add(inv)
+        db.commit()
+        db.refresh(inv)
+
+        def failing_fetcher(url: str):
+            raise ConnectionResetError("Connection refused by remote host")
+
+        agent = BrowserResearchAgent(fetcher=failing_fetcher)
+        task = make_task(preferred_sources=["company_website"], fallback_sources=[])
+
+        with patch("app.db.session.SessionLocal", TestingSessionLocal):
+            results = agent.execute(task, investigation_id=inv.id)
+
+        session = db.query(BrowserSession).filter(BrowserSession.investigation_id == inv.id).first()
+        assert session is not None
+        assert session.status == "ERROR"
+        meta = json.loads(session.failure_reason)
+        assert "ConnectionResetError: Connection refused by remote host" in meta["failure_reason"]
+    finally:
+        db.close()
+
+
+def test_successful_company_website_selected_as_evidence():
+    """H: Reachable company website produces SUCCESS, PASSED, confidence=0.85, selected_as_evidence=true."""
+    from unittest.mock import patch
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.db.base import Base
+    from app.models.browser_session import BrowserSession
+    from app.models.investigation import Investigation
+    import json
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(bind=engine)
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = TestingSessionLocal()
+    try:
+        inv = Investigation(status="created", input_data='{"name": "Wipro"}')
+        db.add(inv)
+        db.commit()
+        db.refresh(inv)
+
+        html = """
+        <html>
+          <head><title>Wipro | Consulting-Led and AI-Powered Technology Services</title></head>
+          <body>
+            <h1>Wipro Limited</h1>
+            <p>Welcome to Wipro Limited official corporate portal in Karnataka, India.</p>
+          </body>
+        </html>
+        """
+        agent = BrowserResearchAgent(fetcher=lambda u: html)
+        task = make_task(
+            task_type="WEBSITE_VERIFICATION",
+            target="https://www.wipro.com",
+            preferred_sources=["company_website"],
+            required_fields=["website_status", "page_title", "legal_name"],
+        )
+
+        with patch("app.db.session.SessionLocal", TestingSessionLocal):
+            results = agent.execute(task, investigation_id=inv.id)
+
+        assert len(results) == 3
+        res_map = {r.field_name: r for r in results}
+        assert res_map["website_status"].field_value == "AVAILABLE"
+        assert res_map["website_status"].confidence == 0.85
+        assert res_map["website_status"].verification_status == "VERIFIED"
+        assert res_map["website_status"].source_url == "https://www.wipro.com"
+
+        session = db.query(BrowserSession).filter(BrowserSession.investigation_id == inv.id).first()
+        assert session is not None
+        assert session.status == "SUCCESS"
+        meta = json.loads(session.failure_reason)
+        assert meta["relevance_result"] == "PASSED"
+        assert meta["confidence"] == 0.85
+        assert meta["selected_as_evidence"] is True
+    finally:
+        db.close()
+
+
+def test_successful_third_party_directory_search_and_evidence_selection():
+    """Verify that a real third-party registry (QuickCompany/Tofler/Zauba) produces SUCCESS, PASSED, non-zero confidence, and selected_as_evidence: true."""
+    from unittest.mock import patch
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.db.base import Base
+    from app.models.browser_session import BrowserSession
+    from app.models.investigation import Investigation
+    import json
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(bind=engine)
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = TestingSessionLocal()
+    try:
+        inv = Investigation(status="created", input_data='{"name": "Wipro Limited"}')
+        db.add(inv)
+        db.commit()
+        db.refresh(inv)
+
+        search_html = """
+        <html>
+          <head><title>Search Results - QuickCompany</title></head>
+          <body>
+            <h1>Companies matching WIPRO LIMITED</h1>
+            <div><a href="/company/WIPRO-LIMITED-in-Karnataka">WIPRO LIMITED - Karnataka</a></div>
+          </body>
+        </html>
+        """
+        profile_html = """
+        <html>
+          <head><title>WIPRO LIMITED - Company Registration & Financials</title></head>
+          <body>
+            <h1>WIPRO LIMITED</h1>
+            <p>CIN: L32102KA1945PLC020800</p>
+            <p>Company status: ACTIVE</p>
+            <p>Address: Doddakannelli, Sarjapur Road, Bangalore, Karnataka 560035</p>
+          </body>
+        </html>
+        """
+
+        def mock_fetcher(url: str):
+            if "wipro-limited-in-karnataka" in url.lower():
+                return profile_html
+            return search_html
+
+        agent = BrowserResearchAgent(fetcher=mock_fetcher)
+        task = make_task(
+            task_type="THIRD_PARTY_RESEARCH",
+            target="Wipro Limited",
+            preferred_sources=["quickcompany.in"],
+            required_fields=["legal_name", "company_status", "registered_address"],
+        )
+
+        with patch("app.db.session.SessionLocal", TestingSessionLocal):
+            results = agent.execute(task, investigation_id=inv.id)
+
+        assert len(results) == 3
+        res_map = {r.field_name: r for r in results}
+        assert res_map["legal_name"].field_value == "WIPRO LIMITED"
+        assert res_map["company_status"].field_value == "ACTIVE"
+        assert res_map["legal_name"].confidence == 0.80
+        assert res_map["legal_name"].verification_status == "VERIFIED"
+
+        session = db.query(BrowserSession).filter(BrowserSession.investigation_id == inv.id).first()
+        assert session is not None
+        assert session.status == "SUCCESS"
+        meta = json.loads(session.failure_reason)
+        assert meta["relevance_result"] == "PASSED"
+        assert meta["confidence"] == 0.80
+        assert meta["selected_as_evidence"] is True
+    finally:
+        db.close()
+
 

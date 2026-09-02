@@ -40,7 +40,10 @@ def calculate_risk_analysis(
         field_value = getattr(ev, "field_value", None) or (ev.get("field_value") if isinstance(ev, dict) else None)
         confidence = getattr(ev, "confidence", None) or (ev.get("confidence") if isinstance(ev, dict) else 0.0)
         source_name = getattr(ev, "source_name", None) or (ev.get("source_name") if isinstance(ev, dict) else None)
-        print(f"[DIAGNOSTIC] Raw Record {idx}: ID={ev_id} | Field={field_name} | Value={field_value} ({type(field_value).__name__}) | Confidence={confidence} | Source={source_name}", flush=True)
+        val_repr = str(field_value)
+        if len(val_repr) > 150:
+            val_repr = val_repr[:147] + "..."
+        print(f"[DIAGNOSTIC] Raw Record {idx}: ID={ev_id} | Field={field_name} | Value={val_repr} ({type(field_value).__name__}) | Confidence={confidence} | Source={source_name}", flush=True)
 
     config = load_config()
     rules_config = config.get("rules", {})
@@ -90,7 +93,10 @@ def calculate_risk_analysis(
     normalized_evs = [normalize_evidence(ev) for ev in evidences_raw]
     print(f"[DIAGNOSTIC] Number of normalized evidence records: {len(normalized_evs)}", flush=True)
     for idx, nev in enumerate(normalized_evs, start=1):
-        print(f"[DIAGNOSTIC] Normalized Record {idx}: ID={nev.id} | Field={nev.field_name} | Value={nev.field_value} | Source={nev.source_name} | Confidence={nev.confidence}", flush=True)
+        nval_repr = str(nev.field_value)
+        if len(nval_repr) > 150:
+            nval_repr = nval_repr[:147] + "..."
+        print(f"[DIAGNOSTIC] Normalized Record {idx}: ID={nev.id} | Field={nev.field_name} | Value={nval_repr} | Source={nev.source_name} | Confidence={nev.confidence}", flush=True)
 
     # Only validated, traceable evidence may participate in risk scoring.
     # Reject malformed evidence rather than allowing an ungrounded rule to affect score.
@@ -115,7 +121,10 @@ def calculate_risk_analysis(
 
     print(f"[DIAGNOSTIC] Number of validated evidence records passing confidence filter (>= 0.5): {len(validated_evs)}", flush=True)
     for idx, vev in enumerate(validated_evs, start=1):
-        print(f"[DIAGNOSTIC] Validated Record {idx}: ID={vev.id} | Field={vev.field_name} | Value={vev.field_value} | Source={vev.source_name} | Confidence={vev.confidence}", flush=True)
+        vval_repr = str(vev.field_value)
+        if len(vval_repr) > 150:
+            vval_repr = vval_repr[:147] + "..."
+        print(f"[DIAGNOSTIC] Validated Record {idx}: ID={vev.id} | Field={vev.field_name} | Value={vval_repr} | Source={vev.source_name} | Confidence={vev.confidence}", flush=True)
 
     # Determine whether sufficient evidence exists before running deterministic rules
     non_candidate_evs = [e for e in validated_evs if e.field_name != "candidate_entities"]
