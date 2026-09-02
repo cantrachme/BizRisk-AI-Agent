@@ -22,6 +22,7 @@ from app.research.base import (
     extract_date_from_text,
     extract_html_page_data,
     extract_status_from_text,
+    extract_business_activity_from_text,
     http_fetch_direct,
     is_failed_or_blocked_response,
     is_url,
@@ -365,24 +366,34 @@ class BrowserResearchAgent:
             elif "gov.in" not in str(source).lower():
                 tier = 3
 
-            research_url = self._resolve_url(
-                task=task,
-                source=source,
-                source_url=source_url,
-            )
-
             canonical_source = DISPLAY_TO_CANONICAL.get(source, source)
             src_meta = source_registry.get_source(canonical_source) or source_registry.get_source(source)
+
+            # Build ordered list of candidate URLs for this source
+            candidate_urls: List[str] = []
+            resolved_primary = self._resolve_url(task=task, source=source, source_url=source_url)
+            if resolved_primary:
+                candidate_urls.append(resolved_primary)
+
+            if src_meta:
+                meta_candidates = src_meta.get_candidate_urls(task.target, task.task_type)
+                for mc in meta_candidates:
+                    if mc and mc not in candidate_urls:
+                        candidate_urls.append(mc)
+
+            if not candidate_urls and source_url:
+                candidate_urls.append(source_url)
+
             logger.info(
-                "[BROWSER_RESOLVE_URL] Task=%s Source='%s' Target='%s' Resolved_URL='%s' Source_Metadata=%s",
+                "[BROWSER_RESOLVE_URL] Task=%s Source='%s' Target='%s' Candidate_URLs=%s Source_Metadata=%s",
                 task.task_id,
                 source,
                 task.target,
-                research_url,
+                candidate_urls,
                 src_meta.__dict__ if src_meta else None,
             )
 
-            if research_url is None:
+            if not candidate_urls:
                 self._save_browser_attempt(
                     investigation_id=investigation_id,
                     task=task,
@@ -410,172 +421,68 @@ class BrowserResearchAgent:
                     event_type="FALLBACK_STARTED",
                     status="IN_PROGRESS",
                     source_name=source_name,
-                    url=research_url,
+                    url=candidate_urls[0],
                     message=f"Attempting fallback source: {source_name}",
                 )
 
-            self._record_browser_event(
-                investigation_id=investigation_id,
-                task_id=task.task_id,
-                event_type="NAVIGATING",
-                status="IN_PROGRESS",
-                source_name=source_name,
-                url=research_url,
-                message=f"Opening public source page: {source_name}",
-            )
+            source_succeeded = False
+            for cand_idx, research_url in enumerate(candidate_urls):
+                self._record_browser_event(
+                    investigation_id=investigation_id,
+                    task_id=task.task_id,
+                    event_type="NAVIGATING",
+                    status="IN_PROGRESS",
+                    source_name=source_name,
+                    url=research_url,
+                    message=f"Opening public source page (attempt {cand_idx+1}/{len(candidate_urls)}): {source_name}",
+                )
 
-            try:
-                html = None
-                if use_live_session:
-                    from app.core.browser_session_manager import browser_session_manager
-                    live_session = browser_session_manager.get_session(investigation_id, task.task_id, source)
-                    if live_session:
+                try:
+                    html = None
+                    if use_live_session:
+                        from app.core.browser_session_manager import browser_session_manager
+                        live_session = browser_session_manager.get_session(investigation_id, task.task_id, source)
+                        if live_session:
+                            self._record_browser_event(
+                                investigation_id=investigation_id,
+                                task_id=task.task_id,
+                                event_type="BROWSER_SESSION_RESUMED",
+                                status="IN_PROGRESS",
+                                source_name=source_name,
+                                url=live_session.get_url(),
+                                message="Resuming live session",
+                            )
+                            try:
+                                html = live_session.content()
+                            except Exception:
+                                browser_session_manager.close_session(investigation_id, task.task_id, source)
+                                live_session = None
+
+                        if not live_session:
+                            try:
+                                live_session = browser_session_manager.start_session(investigation_id, task.task_id, source)
+                                live_session.goto(research_url)
+                                html = live_session.content()
+                            except Exception as e:
+                                browser_session_manager.close_session(investigation_id, task.task_id, source)
+                                try:
+                                    html = self.fetcher(research_url)
+                                except Exception:
+                                    raise e
+                    else:
+                        html = self.fetcher(research_url)
+
+                    intervention_type = detect_human_intervention(html)
+                    if intervention_type:
                         self._record_browser_event(
                             investigation_id=investigation_id,
                             task_id=task.task_id,
-                            event_type="BROWSER_SESSION_RESUMED",
+                            event_type="CAPTCHA_DETECTED",
                             status="IN_PROGRESS",
                             source_name=source_name,
-                            url=live_session.get_url(),
-                            message="Resuming live session",
+                            url=research_url,
+                            message=f"Verification challenge detected on {source_name}",
                         )
-                        try:
-                            html = live_session.content()
-                        except Exception:
-                            browser_session_manager.close_session(investigation_id, task.task_id, source)
-                            live_session = None
-
-                    if not live_session:
-                        try:
-                            live_session = browser_session_manager.start_session(investigation_id, task.task_id, source)
-                            live_session.goto(research_url)
-                            html = live_session.content()
-                        except Exception as e:
-                            browser_session_manager.close_session(investigation_id, task.task_id, source)
-                            try:
-                                html = self.fetcher(research_url)
-                            except Exception:
-                                raise e
-                else:
-                    html = self.fetcher(research_url)
-
-                intervention_type = detect_human_intervention(html)
-                if intervention_type:
-                    self._record_browser_event(
-                        investigation_id=investigation_id,
-                        task_id=task.task_id,
-                        event_type="CAPTCHA_DETECTED",
-                        status="IN_PROGRESS",
-                        source_name=source_name,
-                        url=research_url,
-                        message=f"Verification challenge detected on {source_name}",
-                    )
-                    self._save_browser_attempt(
-                        investigation_id=investigation_id,
-                        task=task,
-                        source_name=source_name,
-                        source=source,
-                        url=research_url,
-                        attempt_order=attempt_order,
-                        started_at=started_at,
-                        completed_at=datetime.now(timezone.utc),
-                        status="BLOCKED_OR_ERROR",
-                        http_result="Bot Challenge",
-                        title=None,
-                        text_length=len(html or ""),
-                        relevance_result="BLOCKED_OR_ERROR",
-                        failure_reason=f"Verification challenge detected: {intervention_type}",
-                        confidence=0.0,
-                        selected_as_evidence=False,
-                    )
-                    continue
-
-                # Directory link discovery: if on a third-party source and candidate company links exist, resolve the exact profile URL
-                if html and (source in {"quickcompany.in", "tofler.in", "zaubacorp.com", "instafinancials.com", "third_party", "generic_web"} or "company" in str(source_url or "").lower()):
-                    try:
-                        parsed_domain = urlparse(research_url).netloc.lower().replace("www.", "")
-                        raw_hrefs = re.findall(r'href=["\']([^"\'#?]+(?:/[^"\'#?]+)*)["\']', html, re.IGNORECASE)
-                        cand_links = []
-                        for href in raw_hrefs:
-                            if any(pattern in href.lower() for pattern in ["/company/", "/companysearchresults/", "/gstin/"]):
-                                full_url = href if href.startswith("http") else f"https://www.{parsed_domain}/{href.lstrip('/')}"
-                                if parsed_domain in full_url.lower() and full_url not in cand_links and full_url != research_url:
-                                    cand_links.append(full_url)
-
-                        logger.info(
-                            "[BROWSER_LINK_DISCOVERY] Task=%s Initial_URL='%s' Candidate_URLs=%s",
-                            task.task_id,
-                            research_url,
-                            cand_links,
-                        )
-
-                        if cand_links:
-                            scored_cands = []
-                            for link in cand_links:
-                                sc, _, rel = score_candidate_url(link, task.target, task.task_type)
-                                if sc >= 0.40 or rel in {"TARGET_ENTITY", "RELATED_ENTITY"}:
-                                    scored_cands.append((sc, link))
-
-                            logger.info(
-                                "[BROWSER_LINK_SCORING] Task=%s Candidate_Scores=%s",
-                                task.task_id,
-                                scored_cands,
-                            )
-
-                            if scored_cands:
-                                scored_cands.sort(key=lambda x: x[0], reverse=True)
-                                best_candidate_url = scored_cands[0][1]
-                                sub_html = self.fetcher(best_candidate_url)
-                                if sub_html and not detect_bot_or_captcha(sub_html) and not self._is_failed_or_blocked_retrieval(sub_html, task.target):
-                                    html = sub_html
-                                    research_url = best_candidate_url
-                    except Exception:
-                        pass
-
-                logger.info(
-                    "[BROWSER_SELECTED_URL] Task=%s Final_Selected_URL='%s'",
-                    task.task_id,
-                    research_url,
-                )
-
-                failure_reason = self._is_failed_or_blocked_retrieval(html, task.target)
-                if failure_reason:
-                    self._save_browser_attempt(
-                        investigation_id=investigation_id,
-                        task=task,
-                        source_name=source_name,
-                        source=source,
-                        url=research_url,
-                        attempt_order=attempt_order,
-                        started_at=started_at,
-                        completed_at=datetime.now(timezone.utc),
-                        status=failure_reason,
-                        http_result="Failed Relevance or Blocked check",
-                        title=None,
-                        text_length=len(html or "") if html else 0,
-                        relevance_result=failure_reason,
-                        failure_reason=f"Classification: {failure_reason}",
-                        confidence=0.0,
-                        selected_as_evidence=False,
-                    )
-                    if use_live_session:
-                        from app.core.browser_session_manager import browser_session_manager
-                        browser_session_manager.close_session(investigation_id, task.task_id, source)
-                    continue
-
-                # Page succeeded
-                page_data = self._extract_page_data(html)
-                cand_confidence = confidence
-                if task.task_type == "WEBSITE_VERIFICATION":
-                    parsed_domain = urlparse(research_url).netloc.replace("www.", "")
-                    actual_rel = self._classify_entity_relationship(
-                        target=task.target,
-                        domain=parsed_domain,
-                        page_title=page_data.get("title") or "",
-                        page_text=page_data.get("text") or "",
-                    )
-                    page_data["relationship"] = actual_rel
-                    if actual_rel not in {"TARGET_ENTITY", "RELATED_ENTITY"}:
                         self._save_browser_attempt(
                             investigation_id=investigation_id,
                             task=task,
@@ -585,12 +492,82 @@ class BrowserResearchAgent:
                             attempt_order=attempt_order,
                             started_at=started_at,
                             completed_at=datetime.now(timezone.utc),
-                            status="REJECTED",
-                            http_result="Entity Mismatch",
-                            title=page_data.get("title"),
-                            text_length=len(page_data.get("text") or ""),
-                            relevance_result="ENTITY_MISMATCH",
-                            failure_reason=f"Website represents {actual_rel}, not direct target entity",
+                            status="BLOCKED_OR_ERROR",
+                            http_result="Bot Challenge",
+                            title=None,
+                            text_length=len(html or ""),
+                            relevance_result="BLOCKED_OR_ERROR",
+                            failure_reason=f"Verification challenge detected: {intervention_type}",
+                            confidence=0.0,
+                            selected_as_evidence=False,
+                        )
+                        continue
+
+                    # Directory link discovery: if on a third-party source and candidate company links exist, resolve the exact profile URL
+                    if html and (source in {"quickcompany.in", "tofler.in", "zaubacorp.com", "instafinancials.com", "third_party", "generic_web"} or "company" in str(source_url or "").lower()):
+                        try:
+                            parsed_domain = urlparse(research_url).netloc.lower().replace("www.", "")
+                            raw_hrefs = re.findall(r'href=["\']([^"\'#?]+(?:/[^"\'#?]+)*)["\']', html, re.IGNORECASE)
+                            cand_links = []
+                            for href in raw_hrefs:
+                                if any(pattern in href.lower() for pattern in ["/company/", "/companysearchresults/", "/gstin/"]):
+                                    full_url = href if href.startswith("http") else f"https://www.{parsed_domain}/{href.lstrip('/')}"
+                                    if parsed_domain in full_url.lower() and full_url not in cand_links and full_url != research_url:
+                                        cand_links.append(full_url)
+
+                            logger.info(
+                                "[BROWSER_LINK_DISCOVERY] Task=%s Initial_URL='%s' Candidate_URLs=%s",
+                                task.task_id,
+                                research_url,
+                                cand_links,
+                            )
+
+                            if cand_links:
+                                scored_cands = []
+                                for link in cand_links:
+                                    sc, _, rel = score_candidate_url(link, task.target, task.task_type)
+                                    if sc >= 0.40 or rel in {"TARGET_ENTITY", "RELATED_ENTITY"}:
+                                        scored_cands.append((sc, link))
+
+                                logger.info(
+                                    "[BROWSER_LINK_SCORING] Task=%s Candidate_Scores=%s",
+                                    task.task_id,
+                                    scored_cands,
+                                )
+
+                                if scored_cands:
+                                    scored_cands.sort(key=lambda x: x[0], reverse=True)
+                                    best_candidate_url = scored_cands[0][1]
+                                    sub_html = self.fetcher(best_candidate_url)
+                                    if sub_html and not detect_bot_or_captcha(sub_html) and not self._is_failed_or_blocked_retrieval(sub_html, task.target):
+                                        html = sub_html
+                                        research_url = best_candidate_url
+                        except Exception:
+                            pass
+
+                    logger.info(
+                        "[BROWSER_SELECTED_URL] Task=%s Final_Selected_URL='%s'",
+                        task.task_id,
+                        research_url,
+                    )
+
+                    failure_reason = self._is_failed_or_blocked_retrieval(html, task.target)
+                    if failure_reason:
+                        self._save_browser_attempt(
+                            investigation_id=investigation_id,
+                            task=task,
+                            source_name=source_name,
+                            source=source,
+                            url=research_url,
+                            attempt_order=attempt_order,
+                            started_at=started_at,
+                            completed_at=datetime.now(timezone.utc),
+                            status=failure_reason,
+                            http_result="Failed Relevance or Blocked check",
+                            title=None,
+                            text_length=len(html or "") if html else 0,
+                            relevance_result=failure_reason,
+                            failure_reason=f"Classification: {failure_reason}",
                             confidence=0.0,
                             selected_as_evidence=False,
                         )
@@ -598,65 +575,132 @@ class BrowserResearchAgent:
                             from app.core.browser_session_manager import browser_session_manager
                             browser_session_manager.close_session(investigation_id, task.task_id, source)
                         continue
-                    cand_confidence = 0.85 if actual_rel == "TARGET_ENTITY" else 0.50
 
-                self._save_browser_attempt(
-                    investigation_id=investigation_id,
-                    task=task,
-                    source_name=source_name,
-                    source=source,
-                    url=research_url,
-                    attempt_order=attempt_order,
-                    started_at=started_at,
-                    completed_at=datetime.now(timezone.utc),
-                    status="SUCCESS",
-                    http_result="200 OK",
-                    title=page_data.get("title"),
-                    text_length=len(page_data.get("text", "")),
-                    relevance_result="PASSED",
-                    failure_reason=None,
-                    confidence=cand_confidence,
-                    selected_as_evidence=True,
-                )
+                    # Page succeeded
+                    page_data = self._extract_page_data(html)
+                    cand_confidence = confidence
 
-                chosen_source = source_name
-                chosen_url = research_url if research_url else source_url
-                chosen_confidence = cand_confidence
-                chosen_page_data = page_data
-                chosen_page_data["url"] = research_url
-                chosen_authority_tier = tier
-                if use_live_session:
-                    from app.core.browser_session_manager import browser_session_manager
-                    browser_session_manager.close_session(investigation_id, task.task_id, source)
-                break
+                    parsed_domain = urlparse(research_url).netloc.replace("www.", "")
+                    actual_rel = self._classify_entity_relationship(
+                        target=task.target,
+                        domain=parsed_domain,
+                        page_title=page_data.get("title") or "",
+                        page_text=page_data.get("text") or "",
+                    )
+                    page_data["relationship"] = actual_rel
 
-            except Exception as ex:
-                failure_msg = f"{type(ex).__name__}: {ex}"
-                self._save_browser_attempt(
-                    investigation_id=investigation_id,
-                    task=task,
-                    source_name=source_name,
-                    source=source,
-                    url=research_url,
-                    attempt_order=attempt_order,
-                    started_at=started_at,
-                    completed_at=datetime.now(timezone.utc),
-                    status="ERROR",
-                    http_result="Fetch Exception",
-                    title=None,
-                    text_length=0,
-                    relevance_result=None,
-                    failure_reason=failure_msg,
-                    confidence=0.0,
-                    selected_as_evidence=False,
-                )
-                if use_live_session:
-                    try:
+                    if task.task_type == "WEBSITE_VERIFICATION":
+                        if actual_rel not in {"TARGET_ENTITY", "RELATED_ENTITY"}:
+                            self._save_browser_attempt(
+                                investigation_id=investigation_id,
+                                task=task,
+                                source_name=source_name,
+                                source=source,
+                                url=research_url,
+                                attempt_order=attempt_order,
+                                started_at=started_at,
+                                completed_at=datetime.now(timezone.utc),
+                                status="REJECTED",
+                                http_result="Entity Mismatch",
+                                title=page_data.get("title"),
+                                text_length=len(page_data.get("text") or ""),
+                                relevance_result="ENTITY_MISMATCH",
+                                failure_reason=f"Website represents {actual_rel}, not direct target entity",
+                                confidence=0.0,
+                                selected_as_evidence=False,
+                            )
+                            if use_live_session:
+                                from app.core.browser_session_manager import browser_session_manager
+                                browser_session_manager.close_session(investigation_id, task.task_id, source)
+                            continue
+                        cand_confidence = 0.85 if actual_rel == "TARGET_ENTITY" else 0.50
+
+                    elif task.task_type == "THIRD_PARTY_RESEARCH":
+                        if actual_rel not in {"TARGET_ENTITY", "RELATED_ENTITY"}:
+                            self._save_browser_attempt(
+                                investigation_id=investigation_id,
+                                task=task,
+                                source_name=source_name,
+                                source=source,
+                                url=research_url,
+                                attempt_order=attempt_order,
+                                started_at=started_at,
+                                completed_at=datetime.now(timezone.utc),
+                                status="REJECTED",
+                                http_result="Entity Mismatch",
+                                title=page_data.get("title"),
+                                text_length=len(page_data.get("text") or ""),
+                                relevance_result="ENTITY_MISMATCH",
+                                failure_reason=f"Third-party page represents {actual_rel}, not direct target entity",
+                                confidence=0.0,
+                                selected_as_evidence=False,
+                            )
+                            if use_live_session:
+                                from app.core.browser_session_manager import browser_session_manager
+                                browser_session_manager.close_session(investigation_id, task.task_id, source)
+                            continue
+
+                    self._save_browser_attempt(
+                        investigation_id=investigation_id,
+                        task=task,
+                        source_name=source_name,
+                        source=source,
+                        url=research_url,
+                        attempt_order=attempt_order,
+                        started_at=started_at,
+                        completed_at=datetime.now(timezone.utc),
+                        status="SUCCESS",
+                        http_result="200 OK",
+                        title=page_data.get("title"),
+                        text_length=len(page_data.get("text", "")),
+                        relevance_result="PASSED",
+                        failure_reason=None,
+                        confidence=cand_confidence,
+                        selected_as_evidence=True,
+                    )
+
+                    chosen_source = source_name
+                    chosen_url = research_url if research_url else source_url
+                    chosen_confidence = cand_confidence
+                    chosen_page_data = page_data
+                    chosen_page_data["url"] = research_url
+                    chosen_authority_tier = tier
+                    source_succeeded = True
+                    if use_live_session:
                         from app.core.browser_session_manager import browser_session_manager
                         browser_session_manager.close_session(investigation_id, task.task_id, source)
-                    except Exception:
-                        pass
-                continue
+                    break
+
+                except Exception as ex:
+                    failure_msg = f"{type(ex).__name__}: {ex}"
+                    self._save_browser_attempt(
+                        investigation_id=investigation_id,
+                        task=task,
+                        source_name=source_name,
+                        source=source,
+                        url=research_url,
+                        attempt_order=attempt_order,
+                        started_at=started_at,
+                        completed_at=datetime.now(timezone.utc),
+                        status="ERROR",
+                        http_result="Fetch Exception",
+                        title=None,
+                        text_length=0,
+                        relevance_result=None,
+                        failure_reason=failure_msg,
+                        confidence=0.0,
+                        selected_as_evidence=False,
+                    )
+                    if use_live_session:
+                        try:
+                            from app.core.browser_session_manager import browser_session_manager
+                            browser_session_manager.close_session(investigation_id, task.task_id, source)
+                        except Exception:
+                            pass
+                    continue
+
+            if source_succeeded:
+                break
 
         if chosen_page_data is None:
             source = candidates[0] if candidates else "public_source"
@@ -782,6 +826,10 @@ class BrowserResearchAgent:
     @staticmethod
     def _extract_status_from_text(text: str) -> str:
         return extract_status_from_text(text)
+
+    @staticmethod
+    def _extract_business_activity_from_text(text: str) -> str:
+        return extract_business_activity_from_text(text)
 
     @staticmethod
     def _clean_legal_name_candidate(name_candidate: str) -> str | None:
@@ -1082,19 +1130,17 @@ class BrowserResearchAgent:
                             return cand, f"Extracted company name from line: '{line}'"
                 if cleaned_title:
                     return cleaned_title, "Normalized company name from page title"
-                if task.task_type in {"ENTITY_DISCOVERY", "GENERAL_WEB_RESEARCH", "THIRD_PARTY_RESEARCH"}:
-                    return task.target, "Target company name used directly"
+                if task.task_type in {"ENTITY_DISCOVERY", "GENERAL_WEB_RESEARCH"}:
+                    cand = clean_legal_name_candidate(task.target)
+                    if cand:
+                        return cand, "Target company name used directly"
                 return "NOT_FOUND", "No valid company name title extracted"
 
             if field_name in {"business_activity", "nature_of_business", "activity"}:
-                if not text:
-                    return "NOT_FOUND", "No page text available"
-                lines = [l.strip() for l in text.split("\n") if l.strip()]
-                for line in lines:
-                    match = re.search(r"(?:business\s+activity|nature\s+of\s+business|activity)\s*[:\-]?\s*([A-Za-z0-9\s.,&()/-]+)", line, re.IGNORECASE)
-                    if match and len(match.group(1).strip()) > 3:
-                        return match.group(1).strip(), f"Extracted business activity from line: '{line}'"
-                return "NOT_FOUND", "No business activity pattern matched"
+                act = BrowserResearchAgent._extract_business_activity_from_text(text)
+                if act != "NOT_FOUND":
+                    return act, "Extracted structured business activity description"
+                return "NOT_FOUND", "No valid business activity pattern matched"
 
             if field_name in {"website_url", "website", "domain", "candidate_domain"}:
                 if url:

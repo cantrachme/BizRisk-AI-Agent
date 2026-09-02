@@ -70,7 +70,7 @@ def build_verification_summary(evidences: list) -> dict[str, dict[str, str]]:
             by_source_category["epfo"].append(ev)
         elif "website" in src or "company" in src:
             by_source_category["official_website"].append(ev)
-        elif "third_party" in src or "zauba" in src or "tofler" in src:
+        elif any(k in src for k in ["third_party", "zauba", "tofler", "quick", "insta"]):
             by_source_category["third_party"].append(ev)
         else:
             by_source_category["general_web"].append(ev)

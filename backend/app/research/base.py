@@ -320,7 +320,7 @@ def extract_address_from_text(text: str | None) -> str:
                 match = re.search(r"\b" + re.escape(prefix) + r"\s*(?:is|:|-)?\s*(.*)", line, re.IGNORECASE)
                 if match and len(match.group(1).strip()) > 5:
                     content = match.group(1).strip()
-                    content = re.sub(r"^(?:[A-Za-z0-9\s.,&()/-]+\s+is\s+|is\s+)", "", content, flags=re.IGNORECASE).strip()
+                    content = re.sub(r"^(?:[A-Za-z0-9\s.,&()/-]+\s+is\s+|is\s+|at\s+|is\s+at\s+)", "", content, flags=re.IGNORECASE).strip()
                     content = re.split(r"(?i)\s+(?:business\s*activity|activity|gst\s*status|gstin|cin|status|incorporation|registration\s*date|contact|phone|email|website|date\s*of\s*incorporation|pan)\b", content)[0].strip()
                     if "." in content and len(content.split(".")[0]) > 8:
                         content = content.split(".")[0].strip()
@@ -337,7 +337,7 @@ def extract_address_from_text(text: str | None) -> str:
         if any(neg in line_lower for neg in ["same address", "similar address", "search", "menu"]):
             continue
         if re.search(r"\b\d{6}\b", line) and any(state in line_lower for state in indian_states):
-            clean_line = re.sub(r"^(?:registered\s+address\s+of\s+[A-Za-z0-9\s.,&()/-]+\s+is|principal\s+place\s+of\s+business|registered\s+address|address|office)\s*[:\-]?", "", line, flags=re.IGNORECASE).strip()
+            clean_line = re.sub(r"^(?:at\s+|is\s+at\s+|registered\s+address\s+of\s+[A-Za-z0-9\s.,&()/-]+\s+is|principal\s+place\s+of\s+business|registered\s+address|address|office)\s*[:\-]?", "", line, flags=re.IGNORECASE).strip()
             if len(clean_line) > 10:
                 return clean_line
             addr_block = [lines[j] for j in range(max(0, i - 2), i + 1)]
@@ -362,16 +362,54 @@ def extract_date_from_text(text: str | None) -> str:
     return "NOT_FOUND"
 
 
+def extract_business_activity_from_text(text: str | None) -> str:
+    if not text:
+        return "NOT_FOUND"
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    invalid_activities = {
+        "code", "activities", "business activity", "activity", "nic code", "class",
+        "category", "n/a", "na", "error", "none", "not found", "unavailable", "null",
+        "details", "description", "industry", "industrial class", "type", "sector"
+    }
+    for line in lines:
+        match = re.search(
+            r"(?:principal\s+business\s+activity|business\s+activity(?:\s+description)?|nature\s+of\s+business(?:\s+activities)?|nic\s+(?:code\s+)?description|activity\s+description|industrial\s+class)\s*[:\-]?\s*(.+)",
+            line,
+            re.IGNORECASE
+        )
+        if match:
+            candidate = match.group(1).strip()
+            # Clean off trailing labels
+            candidate = re.split(r"(?i)\s+(?:cin|gstin|company\s+status|status|date\s+of|registered\s+office)\b", candidate)[0].strip()
+            cand_clean = re.sub(r"^[:\-–—\s]+|[.:\-–—\s]+$", "", candidate).strip()
+            if cand_clean.lower() not in invalid_activities and len(cand_clean) >= 4 and not re.match(r"^\d+$", cand_clean):
+                return cand_clean
+
+    return "NOT_FOUND"
+
+
 def extract_status_from_text(text: str | None) -> str:
     if not text:
         return "NOT_FOUND"
     lines = [line.strip() for line in text.split("\n") if line.strip()]
+    valid_statuses = [
+        ("ACTIVE", ["active"]),
+        ("INACTIVE", ["inactive"]),
+        ("CANCELLED", ["cancelled", "canceled"]),
+        ("SUSPENDED", ["suspended"]),
+        ("STRIKE OFF", ["strike off", "struck off", "strikeoff"]),
+        ("AMALGAMATED", ["amalgamated"]),
+        ("UNDER LIQUIDATION", ["under liquidation", "in liquidation"]),
+        ("DORMANT", ["dormant"]),
+        ("DISSOLVED", ["dissolved"]),
+    ]
     for line in lines:
         line_lower = line.lower()
-        if any(kw in line_lower for kw in ["status", "company status", "gst status"]):
-            for keyword in ["active", "inactive", "cancelled", "suspended", "allocated", "struck off"]:
-                if keyword in line_lower:
-                    return keyword.upper()
+        if any(kw in line_lower for kw in ["status", "company status", "gst status", "registration status"]):
+            for canonical, keywords in valid_statuses:
+                for kw in keywords:
+                    if re.search(r"\b" + re.escape(kw) + r"\b", line_lower):
+                        return canonical
     return "NOT_FOUND"
 
 
@@ -384,6 +422,8 @@ def clean_legal_name_candidate(name_candidate: str | None) -> str | None:
     name = " ".join(name.split())
 
     suffix_patterns = [
+        r"(?i)\s+Financials\s*\|\s*Company\s+Details.*$",
+        r"(?i)\s*[-|–—:]\s*Company\s+Details.*$",
         r"(?i)\s*[-|–—:]\s*Company\s+Profile.*$",
         r"(?i)\s*[-|–—:]\s*Profile.*$",
         r"(?i)\s*[-|–—:]\s*Overview.*$",
@@ -415,12 +455,17 @@ def clean_legal_name_candidate(name_candidate: str | None) -> str | None:
     for pat in suffix_patterns:
         name = re.sub(pat, "", name).strip()
 
+    # Strip trailing location contamination (e.g. "TATA CONSULTANCY SERVICES LIMITED in maharashtra")
+    name = re.sub(r"(?i)\s+\bin\s+[A-Za-z]+(?:\s+[A-Za-z]+)?$", "", name).strip()
+    name = re.sub(r"(?i)\s+(?:mca\s+company\s+registration|epfo\s+establishment|official\s+website|company\s+registration|master\s+data)\b.*$", "", name).strip()
+
     KNOWN_SLOGANS = [
         "leadership with trust", "where quality matters", "online store", "online electronic",
         "shopping store", "shopping online", "best deals", "leading provider", "where quality",
         "welcome to", "your trusted", "buy online", "lowest prices", "customer support",
         "trust and value", "powering the future", "touching lives", "improving the quality of life",
-        "delivering excellence", "world class solutions", "shaping tomorrow", "innovating for growth"
+        "delivering excellence", "world class solutions", "shaping tomorrow", "innovating for growth",
+        "trademarks and logos", "s and logos appearing", "logos appearing on", "all rights reserved"
     ]
     name_lower = name.lower()
     for slogan in KNOWN_SLOGANS:
@@ -430,17 +475,28 @@ def clean_legal_name_candidate(name_candidate: str | None) -> str | None:
 
     name = re.sub(r"[.\-–—:|/,\s]+$", "", name).strip()
     name_lower = name.lower()
+
+    reject_phrases = {
+        "welcome", "home", "login", "index", "the group", "leadership", "trust",
+        "the tata group", "welcome - online", "404 not found", "page not found",
+        "not found", "access denied", "forbidden", "duckduckgo", "search results", "search",
+        "of business", "nature of business", "business activity", "registered office",
+        "s and logos appearing on the site", "trademarks and logos appearing on the site",
+        "terms of use", "privacy policy", "all rights reserved", "something went wrong", "error"
+    }
+
     portal_titles = [
         "goods & services tax", "goods and services tax", "search taxpayer",
         "ministry of corporate affairs", "mca services", "company master data",
         "employees' provident fund", "epfindia", "gst portal", "mca portal", "epfo portal",
         "search results", "companies matching", "search companies", "results for"
     ]
+
     if (
         len(name) < 3
         or name_lower.startswith(("welcome", "home", "login", "index", "about us", "online store", "online shopping", "search results", "search -", "search for", "companies matching", "404", "503", "502", "500", "403", "401"))
-        or name_lower in {"welcome", "home", "login", "index", "the group", "leadership", "trust", "the tata group", "welcome - online", "404 not found", "page not found", "not found", "access denied", "forbidden", "duckduckgo", "search results", "search"}
-        or any(phrase == name_lower for phrase in ["welcome", "online store", "shopping store", "best deals", "welcome to", "404 not found", "page not found", "search results"])
+        or name_lower in reject_phrases
+        or any(phrase in name_lower for phrase in ["s and logos appearing", "trademarks and logos", "something went wrong", "access denied", "page not found"])
         or any(se in name_lower for se in ["duckduckgo", "bing search", "google search", "yahoo search"])
         or any(pt in name_lower for pt in portal_titles)
     ):
@@ -575,20 +631,22 @@ def score_candidate_url(res_url: str, target: str, task_type: str) -> tuple[floa
         if is_reputable_directory:
             if overlap_ratio >= 0.50:
                 return 0.95, f"Reputable registry with token overlap ({overlap_ratio:.2f})", "TARGET_ENTITY"
-            return 0.70, "Reputable corporate registry", "UNKNOWN"
+            elif overlap_ratio > 0.0:
+                return 0.50, f"Reputable registry with partial token overlap ({overlap_ratio:.2f})", "RELATED_ENTITY"
+            return 0.0, "No token overlap on corporate registry", "UNRELATED"
         if overlap_ratio >= 0.50:
             return 0.75, f"Third-party site with token overlap ({overlap_ratio:.2f})", "TARGET_ENTITY"
-        return 0.30, "Low token overlap for third-party source", "UNRELATED"
+        elif overlap_ratio > 0.0:
+            return 0.40, f"Third-party site with partial token overlap ({overlap_ratio:.2f})", "RELATED_ENTITY"
+        return 0.0, "No token overlap for third-party source", "UNRELATED"
 
     else:
         if overlap_ratio >= 0.60:
             return 0.85, f"Strong token overlap ({overlap_ratio:.2f})", "TARGET_ENTITY"
         elif overlap_ratio >= 0.30:
             return 0.60, f"Moderate token overlap ({overlap_ratio:.2f})", "RELATED_ENTITY"
-        elif is_reputable_directory:
-            return 0.65, "Reputable registry candidate", "TARGET_ENTITY"
         else:
-            return 0.20, f"Low token overlap ({overlap_ratio:.2f})", "UNRELATED"
+            return 0.0, f"Low or no token overlap ({overlap_ratio:.2f})", "UNRELATED"
 
 
 class BaseResearchProvider(abc.ABC):
