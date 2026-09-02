@@ -7,7 +7,16 @@ import {
   HumanInterventionStatus
 } from '../types';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+function getBaseUrl(): string {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1';
+  let clean = envUrl.trim().replace(/\/+$/, '');
+  if (!clean.endsWith('/api/v1')) {
+    clean = `${clean}/api/v1`;
+  }
+  return clean;
+}
+
+export const API_BASE_URL = getBaseUrl();
 
 export class APIError extends Error {
   status: number;
@@ -32,7 +41,8 @@ function getAuthHeader(): Record<string, string> {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const url = `${API_BASE_URL}${path}`;
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const url = `${API_BASE_URL}${normalizedPath}`;
   const headers = {
     'Content-Type': 'application/json',
     ...getAuthHeader(),
@@ -120,5 +130,20 @@ export const api = {
   // Complete Human Intervention on Task
   completeHumanIntervention: (investigationId: string, taskId: string) => request<{ status: string; investigation_status: string; task_status: string }>(`/investigations/${investigationId}/tasks/${taskId}/human-intervention`, {
     method: 'POST',
-  })
+  }),
+
+  // Browser Session Diagnostics & HITL Controls
+  getBrowserSession: (investigationId: string, taskId: string) => request<{ status: string; has_session: boolean; requires_interaction: boolean; metadata?: Record<string, unknown> }>(`/investigations/${investigationId}/tasks/${taskId}/browser-session`),
+
+  sendClick: (investigationId: string, taskId: string, payload: { x: number; y: number }) => request<{ status: string }>(`/investigations/${investigationId}/tasks/${taskId}/click`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+
+  sendType: (investigationId: string, taskId: string, payload: { text: string }) => request<{ status: string }>(`/investigations/${investigationId}/tasks/${taskId}/type`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+
+  getScreenshotUrl: (investigationId: string, taskId: string, cb?: number) => `${API_BASE_URL}/investigations/${investigationId}/tasks/${taskId}/screenshot?cb=${cb || 0}`,
 };
