@@ -34,9 +34,12 @@ class PlannerAgent:
         business_name = normalized_input.get("business_name") or raw_input.get("business_name")
         location = normalized_input.get("location") or raw_input.get("location")
 
-        # Track existing scheduled tasks by (type, normalized_target) and task_type
+        # Track existing scheduled tasks by (type, normalized_target, preferred_sources)
         all_existing_tasks = pending_tasks + completed_tasks + failed_tasks
-        scheduled_pairs = {(t.task_type, t.target.strip().lower()) for t in all_existing_tasks if t.target}
+        scheduled_keys = {
+            (t.task_type, t.target.strip().lower(), tuple(sorted(t.preferred_sources or [])))
+            for t in all_existing_tasks if t.target
+        }
         scheduled_task_types = {t.task_type for t in all_existing_tasks}
         
         new_tasks: List[ResearchTask] = []
@@ -91,7 +94,13 @@ class PlannerAgent:
         epfo_pref, epfo_fall = source_registry.get_preferred_and_fallback_sources("EPFO_VERIFICATION")
         web_pref, web_fall = source_registry.get_preferred_and_fallback_sources("WEBSITE_VERIFICATION")
         disc_pref, disc_fall = source_registry.get_preferred_and_fallback_sources("ENTITY_DISCOVERY")
-        third_party_pref, third_party_fall = source_registry.get_preferred_and_fallback_sources("THIRD_PARTY_RESEARCH")
+        
+        all_tp_sources = source_registry.list_sources(task_type="THIRD_PARTY_RESEARCH", enabled_only=True)
+        tp_directory_sources = [
+            s for s in all_tp_sources if s.name not in {"generic_web", "third_party"}
+        ]
+        if not tp_directory_sources:
+            tp_directory_sources = all_tp_sources
 
         try:
             with SessionLocal() as db:
@@ -111,16 +120,29 @@ class PlannerAgent:
                 db_disc_pref, db_disc_fall = get_preferred_sources(db, "ENTITY_DISCOVERY")
                 if db_disc_pref:
                     disc_pref, disc_fall = db_disc_pref, db_disc_fall
+                db_tp_pref, db_tp_fall = get_preferred_sources(db, "THIRD_PARTY_RESEARCH")
+                if db_tp_pref:
+                    db_sources = [source_registry.get_source(x) for x in db_tp_pref if source_registry.get_source(x)]
+                    if db_sources:
+                        tp_directory_sources = db_sources
         except Exception:
             pass
 
         # Helper to safely add idempotent tasks
-        def add_task_if_not_scheduled(task_type: str, target: str, objective: str, required_fields: List[str], priority: int, preferred_sources: List[str], fallback_sources: List[str]):
+        def add_task_if_not_scheduled(
+            task_type: str,
+            target: str,
+            objective: str,
+            required_fields: List[str],
+            priority: int,
+            preferred_sources: List[str],
+            fallback_sources: List[str],
+        ):
             if not target or not target.strip():
                 return
             target_clean = target.strip()
-            pair = (task_type, target_clean.lower())
-            if pair in scheduled_pairs:
+            task_key = (task_type, target_clean.lower(), tuple(sorted(preferred_sources or [])))
+            if task_key in scheduled_keys:
                 return
             new_t = ResearchTask(
                 task_id=next_task_id(),
@@ -130,10 +152,10 @@ class PlannerAgent:
                 required_fields=required_fields,
                 priority=priority,
                 preferred_sources=preferred_sources,
-                fallback_sources=fallback_sources
+                fallback_sources=fallback_sources,
             )
             new_tasks.append(new_t)
-            scheduled_pairs.add(pair)
+            scheduled_keys.add(task_key)
             scheduled_task_types.add(task_type)
 
         # ----------------------------------------------------
@@ -240,16 +262,18 @@ class PlannerAgent:
         # 5. Third-Party Research (Category 5: Third-Party Databases)
         # ----------------------------------------------------
         if primary_name:
-            target_third_party = f"{primary_name} {target_gstin or target_cin or ''}".strip()
-            add_task_if_not_scheduled(
-                task_type="THIRD_PARTY_RESEARCH",
-                target=target_third_party,
-                objective=f"Search third-party business databases (Zauba Corp, Toffler, etc.) for {target_third_party}.",
-                required_fields=["legal_name", "company_status", "registered_address", "business_activity"],
-                priority=2,
-                preferred_sources=third_party_pref,
-                fallback_sources=third_party_fall
-            )
+            identifiers = [x for x in [primary_name, target_cin, target_gstin] if x]
+            target_third_party = " ".join(identifiers)
+            for src_meta in tp_directory_sources:
+                add_task_if_not_scheduled(
+                    task_type="THIRD_PARTY_RESEARCH",
+                    target=target_third_party,
+                    objective=f"Search third-party business database ({src_meta.display_name}) for {target_third_party}.",
+                    required_fields=["legal_name", "company_status", "registered_address", "business_activity"],
+                    priority=2,
+                    preferred_sources=[src_meta.name],
+                    fallback_sources=[],
+                )
 
         # ----------------------------------------------------
         # 6. General Web Research / Entity Discovery (Category 6: General Web Search)

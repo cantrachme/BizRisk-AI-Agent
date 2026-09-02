@@ -31,13 +31,13 @@ class SourceMetadata:
     default_confidence: float = 0.50
     config: Dict = field(default_factory=dict)
 
-    def resolve_target_url(self, target: str, task_type: Optional[str] = None) -> Optional[str]:
+    def get_candidate_urls(self, target: str, task_type: Optional[str] = None) -> List[str]:
         """
-        Dynamically resolves the exact company or research page URL from source configuration.
-        Handles company name slugs, CIN, GSTIN, and explicit website URLs.
+        Dynamically generates an ordered list of candidate URLs for this source
+        using available identifiers (CIN, slug/name, GSTIN, search queries).
         """
         if not target or not isinstance(target, str):
-            return self.base_url
+            return [self.base_url] if self.base_url else []
 
         target_clean = target.strip()
         cin_match = re.search(r"\b([UL][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6})\b", target_clean.upper())
@@ -52,15 +52,19 @@ class SourceMetadata:
 
         if self.name == "company_website" or self.source_type == SourceType.OFFICIAL_WEBSITE or task_type == "WEBSITE_VERIFICATION":
             if is_direct_url:
-                return target_clean if "://" in target_clean else f"https://{target_clean}"
-            clean_name = re.sub(r"(?i)\s+(?:official\s*website|website|in\s*india|company\s*registration|pvt|ltd|limited|private|llp|corp|inc)\b", "", target_clean).strip()
+                url = target_clean if "://" in target_clean else f"https://{target_clean}"
+                return [url]
+            clean_name = re.sub(r"(?i)\s+(?:official\s*website|website|in\s+[A-Za-z]+|company\s*registration|pvt|ltd|limited|private|llp|corp|inc)\b", "", target_clean).strip()
             slug = re.sub(r"[^a-zA-Z0-9]", "", clean_name).lower()
-            return f"https://www.{slug}.com" if slug else None
+            if slug:
+                return [f"https://www.{slug}.com", f"https://{slug}.com", f"https://www.{slug}.in"]
+            return []
 
         if is_direct_url and self.source_type != SourceType.GOVERNMENT:
-            return target_clean if "://" in target_clean else f"https://{target_clean}"
+            url = target_clean if "://" in target_clean else f"https://{target_clean}"
+            return [url]
 
-        # Clean business name slug
+        # Clean business name slug - strictly strip location phrases and query terms
         clean_name = target_clean
         if gstin:
             clean_name = clean_name.replace(gstin, "")
@@ -70,29 +74,75 @@ class SourceMetadata:
         clean_name = re.sub(r"[^a-zA-Z0-9\s-]", "", clean_name).strip()
         slug = re.sub(r"\s+", "-", clean_name).strip("-").lower()
 
-        # 1. Configured pattern resolution
+        candidates: List[str] = []
+
+        # Government Portals
+        if self.base_url and any(gov in self.base_url for gov in ["services.gst.gov.in", "mca.gov.in", "epfindia.gov.in"]):
+            return [self.base_url]
+
+        # 1. Primary configured patterns
         if cin and slug and self.config.get("cin_name_url_pattern"):
-            return self.config["cin_name_url_pattern"].format(slug=slug, cin=cin)
-        if cin and self.config.get("cin_url_pattern"):
-            return self.config["cin_url_pattern"].format(cin=cin)
-        if gstin and self.config.get("gstin_url_pattern"):
-            return self.config["gstin_url_pattern"].format(gstin=gstin)
+            try:
+                candidates.append(self.config["cin_name_url_pattern"].format(slug=slug, cin=cin))
+            except Exception:
+                pass
+
         if slug and self.config.get("name_url_pattern"):
-            return self.config["name_url_pattern"].format(slug=slug)
+            try:
+                candidates.append(self.config["name_url_pattern"].format(slug=slug))
+            except Exception:
+                pass
+
+        if cin and self.config.get("cin_url_pattern"):
+            try:
+                candidates.append(self.config["cin_url_pattern"].format(cin=cin))
+            except Exception:
+                pass
+
+        if gstin and self.config.get("gstin_url_pattern"):
+            try:
+                candidates.append(self.config["gstin_url_pattern"].format(gstin=gstin))
+            except Exception:
+                pass
+
         if self.config.get("url_template"):
-            return self.config["url_template"].format(slug=slug or target_clean, cin=cin or "", gstin=gstin or "")
+            try:
+                candidates.append(self.config["url_template"].format(slug=slug or target_clean, cin=cin or "", gstin=gstin or ""))
+            except Exception:
+                pass
 
-        # 2. Base URL fallback
+        # 2. Alternative search or directory patterns
+        query_val = cin or slug or target_clean
+        if query_val and self.config.get("search_url_pattern"):
+            try:
+                candidates.append(self.config["search_url_pattern"].format(query=query_val, slug=slug or "", cin=cin or ""))
+            except Exception:
+                pass
+
+        # 3. Base URL fallbacks
         if self.base_url:
-            if any(gov in self.base_url for gov in ["services.gst.gov.in", "mca.gov.in", "epfindia.gov.in"]):
-                return self.base_url
             if slug:
-                return f"{self.base_url.rstrip('/')}/company/{slug}"
+                candidates.append(f"{self.base_url.rstrip('/')}/company/{slug}")
             if cin:
-                return f"{self.base_url.rstrip('/')}/company/{cin}"
-            return self.base_url
+                candidates.append(f"{self.base_url.rstrip('/')}/company/{cin}")
+            candidates.append(self.base_url)
 
-        return None
+        # Deduplicate while preserving priority order
+        seen = set()
+        unique_candidates = []
+        for url in candidates:
+            if url and url not in seen:
+                seen.add(url)
+                unique_candidates.append(url)
+
+        return unique_candidates
+
+    def resolve_target_url(self, target: str, task_type: Optional[str] = None) -> Optional[str]:
+        """
+        Dynamically resolves the primary company or research page URL.
+        """
+        candidates = self.get_candidate_urls(target, task_type)
+        return candidates[0] if candidates else self.base_url
 
 
 class SourceRegistryManager:
@@ -162,9 +212,10 @@ class SourceRegistryManager:
                 priority=2,
                 default_confidence=0.80,
                 config={
+                    "name_url_pattern": "https://www.quickcompany.in/company/{slug}",
                     "cin_url_pattern": "https://www.quickcompany.in/company/{cin}",
                     "gstin_url_pattern": "https://www.quickcompany.in/company/{gstin}",
-                    "name_url_pattern": "https://www.quickcompany.in/company/{slug}",
+                    "search_url_pattern": "https://www.quickcompany.in/search?q={query}",
                 },
             ),
             SourceMetadata(
@@ -178,8 +229,10 @@ class SourceRegistryManager:
                 priority=2,
                 default_confidence=0.75,
                 config={
+                    "cin_name_url_pattern": "https://www.tofler.in/{slug}/company/{cin}",
                     "cin_url_pattern": "https://www.tofler.in/company/{cin}",
                     "name_url_pattern": "https://www.tofler.in/company/{slug}",
+                    "search_url_pattern": "https://www.tofler.in/search?q={query}",
                 },
             ),
             SourceMetadata(
@@ -193,9 +246,10 @@ class SourceRegistryManager:
                 priority=2,
                 default_confidence=0.75,
                 config={
-                    "cin_url_pattern": "https://www.zaubacorp.com/company/{cin}",
                     "cin_name_url_pattern": "https://www.zaubacorp.com/company/{slug}/{cin}",
+                    "cin_url_pattern": "https://www.zaubacorp.com/company/{cin}",
                     "name_url_pattern": "https://www.zaubacorp.com/company/{slug}",
+                    "search_url_pattern": "https://www.zaubacorp.com/company-list/p-1-company.html?q={query}",
                 },
             ),
             SourceMetadata(
@@ -209,8 +263,10 @@ class SourceRegistryManager:
                 priority=2,
                 default_confidence=0.75,
                 config={
+                    "cin_name_url_pattern": "https://www.instafinancials.com/company/{slug}/{cin}",
                     "cin_url_pattern": "https://www.instafinancials.com/company/{cin}",
                     "name_url_pattern": "https://www.instafinancials.com/company/{slug}",
+                    "search_url_pattern": "https://www.instafinancials.com/search?q={query}",
                 },
             ),
             SourceMetadata(
@@ -224,9 +280,10 @@ class SourceRegistryManager:
                 priority=3,
                 default_confidence=0.50,
                 config={
+                    "name_url_pattern": "https://www.quickcompany.in/company/{slug}",
                     "cin_url_pattern": "https://www.quickcompany.in/company/{cin}",
                     "gstin_url_pattern": "https://www.quickcompany.in/company/{gstin}",
-                    "name_url_pattern": "https://www.quickcompany.in/company/{slug}",
+                    "search_url_pattern": "https://www.quickcompany.in/search?q={query}",
                 },
             ),
             SourceMetadata(
@@ -240,9 +297,10 @@ class SourceRegistryManager:
                 priority=4,
                 default_confidence=0.60,
                 config={
+                    "name_url_pattern": "https://www.quickcompany.in/company/{slug}",
                     "cin_url_pattern": "https://www.quickcompany.in/company/{cin}",
                     "gstin_url_pattern": "https://www.quickcompany.in/company/{gstin}",
-                    "name_url_pattern": "https://www.quickcompany.in/company/{slug}",
+                    "search_url_pattern": "https://www.quickcompany.in/search?q={query}",
                 },
             ),
         ]
