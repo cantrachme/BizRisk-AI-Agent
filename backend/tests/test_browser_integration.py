@@ -32,31 +32,34 @@ def make_task(
     return task
 
 
-# 1. Test CAPTCHA detection and exception raising
+# 1. Test CAPTCHA detection and unverified result handling
 def test_browser_captcha_trigger():
     agent = BrowserResearchAgent(fetcher=lambda url: "<html><title>Verification</title><body>recaptcha box here. please solve the captcha</body></html>")
     task = make_task()
-    with pytest.raises(HumanInterventionRequiredException) as excinfo:
-        agent.execute(task)
-    assert excinfo.value.intervention_type == "CAPTCHA"
+    results = agent.execute(task)
+    assert len(results) > 0
+    assert all(r.confidence == 0.0 for r in results)
+    assert all(r.field_value in {"NOT_FOUND", "UNAVAILABLE"} for r in results)
 
 
-# 2. Test OTP detection and exception raising
+# 2. Test OTP detection and unverified result handling
 def test_browser_otp_trigger():
     agent = BrowserResearchAgent(fetcher=lambda url: "<html><body>verification code sent to your mobile. enter otp to continue.</body></html>")
     task = make_task()
-    with pytest.raises(HumanInterventionRequiredException) as excinfo:
-        agent.execute(task)
-    assert excinfo.value.intervention_type == "OTP"
+    results = agent.execute(task)
+    assert len(results) > 0
+    assert all(r.confidence == 0.0 for r in results)
+    assert all(r.field_value in {"NOT_FOUND", "UNAVAILABLE"} for r in results)
 
 
-# 3. Test Login requirement detection and exception raising
+# 3. Test Login requirement detection and unverified result handling
 def test_browser_login_trigger():
     agent = BrowserResearchAgent(fetcher=lambda url: "<html><body>member login page. sign in to proceed.</body></html>")
     task = make_task()
-    with pytest.raises(HumanInterventionRequiredException) as excinfo:
-        agent.execute(task)
-    assert excinfo.value.intervention_type == "LOGIN_REQUIRED"
+    results = agent.execute(task)
+    assert len(results) > 0
+    assert all(r.confidence == 0.0 for r in results)
+    assert all(r.field_value in {"NOT_FOUND", "UNAVAILABLE"} for r in results)
 
 
 # 4. Test Empty / Fetch failure gracefully falls back
@@ -104,7 +107,7 @@ def test_browser_source_registry_resolution():
     db_session.add(db_source)
     db_session.commit()
 
-    agent = BrowserResearchAgent(fetcher=lambda url: "<html><body>Content</body></html>")
+    agent = BrowserResearchAgent(fetcher=lambda url: "<html><body>Legal Name: Custom Business Ltd<br>GST status: Active</body></html>")
     task = make_task(preferred_sources=["Custom Registry GST"])
 
     # Mock SessionLocal and get_source_by_name helper

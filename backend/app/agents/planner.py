@@ -150,7 +150,7 @@ class PlannerAgent:
                 fallback_sources=gst_fall
             )
         elif primary_name:
-            target_str = f"{primary_name} in {location}".strip() if location else primary_name
+            target_str = primary_name
             add_task_if_not_scheduled(
                 task_type="GST_VERIFICATION",
                 target=target_str,

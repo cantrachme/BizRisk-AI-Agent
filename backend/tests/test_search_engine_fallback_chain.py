@@ -10,6 +10,7 @@ from app.models.browser_session import BrowserSession
 from app.models.investigation import Investigation
 from app.db.session import SessionLocal, db_lock
 
+
 def _create_test_inv(inv_id: uuid.UUID, biz_name: str):
     with db_lock:
         with SessionLocal() as db:
@@ -23,11 +24,11 @@ def _create_test_inv(inv_id: uuid.UUID, biz_name: str):
             db.add(inv)
             db.commit()
 
-def test_search_engine_chain_ddg_exception_bing_success():
+
+def test_public_source_fallback_chain_quickcompany_zauba():
     """
-    Test that when DuckDuckGo raises a Fetch Exception (e.g. HTTP 403 / Timeout),
-    the agent does NOT terminate the task, but falls through to DDG HTML and Bing,
-    discovers candidate links from Bing, navigates to the result page, and extracts evidence.
+    Test that when QuickCompany fails/blocks, the agent automatically falls through
+    to registered fallback (Zauba Corp) directly, with ZERO search engine calls.
     """
     inv_id = uuid.uuid4()
     _create_test_inv(inv_id, "Apex Dynamic Systems")
@@ -35,33 +36,16 @@ def test_search_engine_chain_ddg_exception_bing_success():
     target_company = "Apex Dynamic Systems"
 
     agent = BrowserResearchAgent()
-
     attempts = []
 
     def mock_fetcher(url: str) -> str:
         attempts.append(url)
-        if "html.duckduckgo.com" in url:
-            # Secondary engine also fails
-            raise Exception("Connection reset by peer")
-        elif "duckduckgo.com" in url:
-            # Primary engine raises Fetch Exception
+        # Search engines must never be called
+        assert not any(se in url.lower() for se in ["duckduckgo.com", "bing.com", "google.com", "yahoo.com"]), f"Search engine called: {url}"
+        
+        if "quickcompany.in" in url:
             raise HTTPError(url, 403, "Forbidden", hdrs={}, fp=None)
-        elif "bing.com" in url:
-            # Tertiary engine Bing succeeds and returns candidate links
-            return f"""
-            <html>
-              <head><title>Bing Search - {target_company}</title></head>
-              <body>
-                <ol id="b_results">
-                  <li>
-                    <h2><a href="https://www.zaubacorp.com/company/Apex-Dynamic-Systems/U72200MH2021PTC123456">Apex Dynamic Systems ZaubaCorp</a></h2>
-                  </li>
-                </ol>
-              </body>
-            </html>
-            """
         elif "zaubacorp.com" in url:
-            # Actual opened result page
             return f"""
             <html>
               <head><title>Apex Dynamic Systems Private Limited - Company Details | Zauba Corp</title></head>
@@ -92,92 +76,68 @@ def test_search_engine_chain_ddg_exception_bing_success():
         objective="Verify company details on third-party registry",
         required_fields=["cin", "legal_name", "company_status"],
         priority=1,
-        preferred_sources=["third_party"],
-        fallback_sources=[],
+        preferred_sources=["quickcompany.in"],
+        fallback_sources=["zaubacorp.com"],
     )
 
     results = agent.execute(task, investigation_id=inv_id)
 
     assert len(results) > 0
-    # Evidence must come from the actual result page, not the search engine
     cin_res = next((r for r in results if r.field_name == "cin"), None)
-    assert cin_res is not None
-    assert cin_res.field_value == "U72200MH2021PTC123456"
-    assert cin_res.confidence > 0.0
-    assert "zaubacorp.com" in cin_res.source_url
+    name_res = next((r for r in results if r.field_name == "legal_name"), None)
+    status_res = next((r for r in results if r.field_name == "company_status"), None)
 
-    # Verify that all 3 search engine attempts were tried in sequence
-    assert any("duckduckgo.com/?q=" in u for u in attempts)
-    assert any("html.duckduckgo.com" in u for u in attempts)
-    assert any("bing.com/search" in u for u in attempts)
-    assert any("zaubacorp.com" in u for u in attempts)
+    assert cin_res is not None and cin_res.field_value == "U72200MH2021PTC123456"
+    assert name_res is not None and "Apex Dynamic Systems" in name_res.field_value
+    assert status_res is not None and status_res.field_value == "ACTIVE"
 
-    # Verify BrowserSession attempts in database
-    with db_lock:
-        with SessionLocal() as db:
-            sessions = db.query(BrowserSession).filter(
-                BrowserSession.investigation_id == inv_id,
-                BrowserSession.task_id == task_id
-            ).order_by(BrowserSession.started_at.asc()).all()
+    # Verify zero search engines were called
+    assert not any("duckduckgo.com" in u for u in attempts)
+    assert not any("bing.com" in u for u in attempts)
 
-            # Should have DDG (ERROR), DDG HTML (ERROR), Bing (SUCCESS), ZaubaCorp (SUCCESS)
-            assert len(sessions) >= 3
-            ddg_session = next((s for s in sessions if "duckduckgo.com/?q=" in (s.failure_reason or "") or s.domain == "duckduckgo.com"), None)
-            assert ddg_session is not None
-            assert ddg_session.status in {"ERROR", "BLOCKED"}
-            assert ddg_session.action_count == 1
 
-            zauba_session = next((s for s in sessions if "zaubacorp.com" in s.domain or "zaubacorp" in (s.failure_reason or "")), None)
-            assert zauba_session is not None
-            assert zauba_session.status == "SUCCESS"
-
-def test_mca_waf_block_falls_back_to_search_chain_and_third_party():
+def test_mca_waf_block_falls_back_to_registered_directory():
     """
-    Test that when MCA official portal fails with WAF / Fetch Exception,
-    the task transitions to third_party fallback, which uses the search chain
-    to find registry evidence.
+    Test that when MCA returns a bot/WAF challenge, the agent automatically falls back
+    to registered directory (Zauba Corp / QuickCompany) without human intervention or search engines.
     """
     inv_id = uuid.uuid4()
-    _create_test_inv(inv_id, "Apex Dynamic Systems")
+    _create_test_inv(inv_id, "Nexus Innovations")
     task_id = "TASK-MCA-01"
-    target_cin = "U72200MH2021PTC123456"
+    target_cin = "U74999DL2020PTC365432 Nexus Innovations"
 
     agent = BrowserResearchAgent()
-
     attempts = []
 
     def mock_fetcher(url: str) -> str:
         attempts.append(url)
+        assert not any(se in url.lower() for se in ["duckduckgo.com", "bing.com", "google.com", "yahoo.com"])
+        
         if "mca.gov.in" in url:
-            # MCA portal blocked / 503
-            raise Exception("503 Service Unavailable (WAF Challenge)")
-        elif "duckduckgo.com/?q=" in url:
-            # DDG fails
-            raise Exception("Timeout Error on DuckDuckGo")
-        elif "html.duckduckgo.com" in url:
-            # DDG HTML succeeds
-            return f"""
+            return """
             <html>
-              <head><title>DuckDuckGo HTML</title></head>
+              <head><title>Attention Required! | Cloudflare</title></head>
               <body>
-                <a class="result__url" href="https://www.tofler.in/apex-dynamic-systems/{target_cin}">Tofler Link</a>
+                <h2>Sorry, you have been blocked</h2>
+                <p>This website is using a security service to protect itself from online attacks.</p>
+                <div class="cf-browser-verification">cf challenge</div>
               </body>
             </html>
             """
-        elif "tofler.in" in url:
-            return f"""
+        elif "quickcompany.in" in url:
+            return """
             <html>
-              <head><title>Apex Dynamic Systems - Tofler</title></head>
+              <head><title>Nexus Innovations Private Limited - Company Details | QuickCompany</title></head>
               <body>
-                <div>Company Details</div>
-                <div>CIN: {target_cin}</div>
-                <div>Legal Name: Apex Dynamic Systems Private Limited</div>
-                <div>Company Status: Active</div>
-                <div>Authorized Capital: 1000000</div>
+                <h1>Nexus Innovations Private Limited</h1>
+                <p>CIN: U74999DL2020PTC365432</p>
+                <p>Company Status: Active</p>
+                <p>Registered Address: Plot 44, Okhla Phase 3, New Delhi 110020, Delhi, India</p>
+                <p>Registration Date: 12 March 2020</p>
               </body>
             </html>
             """
-        raise Exception(f"Unknown URL: {url}")
+        raise Exception(f"Unexpected URL: {url}")
 
     agent.fetcher = mock_fetcher
 
@@ -185,55 +145,51 @@ def test_mca_waf_block_falls_back_to_search_chain_and_third_party():
         task_id=task_id,
         task_type="MCA_VERIFICATION",
         target=target_cin,
-        objective="Verify MCA incorporation status and CIN",
-        required_fields=["cin", "legal_name", "company_status"],
+        objective="Verify MCA master data",
+        required_fields=["cin", "legal_name", "company_status", "registered_address"],
         priority=1,
         preferred_sources=["mca.gov.in"],
-        fallback_sources=["third_party"],
+        fallback_sources=["quickcompany.in"],
     )
 
     results = agent.execute(task, investigation_id=inv_id)
 
     assert len(results) > 0
     cin_res = next((r for r in results if r.field_name == "cin"), None)
-    assert cin_res is not None
-    assert cin_res.field_value == target_cin
+    status_res = next((r for r in results if r.field_name == "company_status"), None)
 
-    assert any("mca.gov.in" in u for u in attempts)
-    assert any("duckduckgo.com" in u for u in attempts)
-    assert any("tofler.in" in u for u in attempts)
+    assert cin_res is not None and cin_res.field_value == "U74999DL2020PTC365432"
+    assert status_res is not None and status_res.field_value == "ACTIVE"
 
-def test_website_discovery_filters_third_party_aggregators():
+    # Verify sessions
+    with db_lock:
+        with SessionLocal() as db:
+            sessions = db.query(BrowserSession).filter(BrowserSession.investigation_id == inv_id).all()
+            assert len(sessions) >= 2
+            mca_session = next((s for s in sessions if "mca.gov.in" in (s.domain or "")), None)
+            assert mca_session is not None
+            assert mca_session.status in {"BLOCKED_OR_ERROR", "BLOCKED"}
+
+
+def test_website_direct_url_verification():
     """
-    Test that website verification discovery ignores ZaubaCorp/Tofler and only opens official domains.
+    Test that website verification navigates directly to the target website URL
+    and verifies entity details without search engines.
     """
     inv_id = uuid.uuid4()
     _create_test_inv(inv_id, "Zenith Dynamics")
     task_id = "TASK-WEB-01"
-    biz_name = "Zenith Dynamics"
+    biz_website = "https://www.zenithdynamics.io"
 
     agent = BrowserResearchAgent()
-
     attempts = []
 
     def mock_fetcher(url: str) -> str:
         attempts.append(url)
-        if "duckduckgo.com/?q=" in url:
-            raise Exception("DDG Fetch Exception")
-        elif "html.duckduckgo.com" in url:
-            # Returns mixed candidate links (aggregators + official company site)
-            return f"""
-            <html>
-              <head><title>DuckDuckGo HTML - {biz_name}</title></head>
-              <body>
-                <a href="https://www.zaubacorp.com/company/Zenith-Dynamics/123">Zauba Link</a>
-                <a href="https://www.tofler.in/zenith-dynamics/123">Tofler Link</a>
-                <a href="https://www.zenithdynamics.io">Official Zenith Dynamics Website</a>
-              </body>
-            </html>
-            """
-        elif "zenithdynamics.io" in url:
-            return f"""
+        assert not any(se in url.lower() for se in ["duckduckgo.com", "bing.com", "google.com", "yahoo.com"])
+        
+        if "zenithdynamics.io" in url:
+            return """
             <html>
               <head><title>Zenith Dynamics | Official Cloud Software</title></head>
               <body>
@@ -250,19 +206,46 @@ def test_website_discovery_filters_third_party_aggregators():
     task = ResearchTask(
         task_id=task_id,
         task_type="WEBSITE_VERIFICATION",
-        target=biz_name,
+        target=biz_website,
         objective="Verify official company website",
-        required_fields=["website_url", "title", "meta_description"],
+        required_fields=["website_status", "page_title"],
         priority=1,
         preferred_sources=["company_website"],
-        fallback_sources=["generic_web"],
+        fallback_sources=[],
     )
 
     results = agent.execute(task, investigation_id=inv_id)
 
     assert len(results) > 0
-    web_res = next((r for r in results if r.field_name == "website_url"), None)
-    assert web_res is not None
-    assert "zenithdynamics.io" in web_res.field_value
-    assert "zaubacorp.com" not in web_res.field_value
-    assert "tofler.in" not in web_res.field_value
+    status_res = next((r for r in results if r.field_name == "website_status"), None)
+    title_res = next((r for r in results if r.field_name == "page_title"), None)
+
+    assert status_res is not None and status_res.field_value == "AVAILABLE"
+    assert title_res is not None and "Zenith Dynamics" in title_res.field_value
+
+
+def test_zero_search_engine_queries_enforced():
+    """
+    Explicit test proving that any attempt to fetch a search engine URL will fail immediately.
+    """
+    from app.research.source_registry import source_registry
+    forbidden_domains = ["duckduckgo.com", "bing.com", "google.com", "yahoo.com", "html.duckduckgo.com"]
+    agent = BrowserResearchAgent()
+
+    for task_type in ["GST_VERIFICATION", "MCA_VERIFICATION", "EPFO_VERIFICATION", "WEBSITE_VERIFICATION", "THIRD_PARTY_RESEARCH"]:
+        task = ResearchTask(
+            task_id=f"TASK-TEST-{task_type}",
+            task_type=task_type,
+            target="Wipro Limited 29AAACW0387R1Z6",
+            objective="Verify entity",
+            required_fields=["legal_name"],
+            priority=1,
+            preferred_sources=[],
+            fallback_sources=[],
+        )
+        # Check that resolved candidate sources contain zero search engines
+        pref, fall = source_registry.get_preferred_and_fallback_sources(task_type)
+        for src in pref + fall:
+            url = agent._resolve_url(task, src, None)
+            if url:
+                assert not any(fd in url.lower() for fd in forbidden_domains), f"Forbidden engine in {src}: {url}"

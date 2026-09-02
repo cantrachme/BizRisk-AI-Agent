@@ -138,7 +138,7 @@ def test_browser_api_error_page_classification(client_override):
     assert data["results"][0]["confidence"] == 0.0
 
 def test_browser_api_human_intervention(client_override):
-    # Test 4: CAPTCHA / Human intervention required exception handling
+    # Test 4: CAPTCHA handling returns unverified results with confidence 0
     mock_html = """
     <html>
     <body>
@@ -161,8 +161,8 @@ def test_browser_api_human_intervention(client_override):
         
     assert resp.status_code == 200
     data = resp.json()
-    assert data["browser_status"] == "BLOCKED"
-    assert "Human intervention required" in data["error"]
+    assert data["results"][0]["field_value"] == "NOT_FOUND"
+    assert data["results"][0]["confidence"] == 0.0
 
 def test_browser_api_isolation(client_override, db_session):
     # Test 5: Verify no investigation/evidence record is written to the database

@@ -21,6 +21,10 @@ from app.research.base import (
 from app.research.source_registry import source_registry
 
 
+import logging
+logger = logging.getLogger("bizrisk.observability")
+
+
 class GenericWebResearchProvider(BaseResearchProvider):
     """
     Automated research provider for curated public company directories
@@ -63,7 +67,15 @@ class GenericWebResearchProvider(BaseResearchProvider):
             base_conf = src_meta.default_confidence if src_meta else 0.50
             disp_name = src_meta.display_name if src_meta else src
 
-            query_url = self._resolve_url(src, target)
+            query_url = self._resolve_url(src, target, task.task_type)
+            logger.info(
+                "[GENERIC_WEB_RESOLVE_URL] Task=%s Source='%s' Target='%s' Resolved_URL='%s' Source_Metadata=%s",
+                task.task_id,
+                src,
+                target,
+                query_url,
+                src_meta.__dict__ if src_meta else None,
+            )
             if not query_url:
                 continue
 
@@ -74,6 +86,55 @@ class GenericWebResearchProvider(BaseResearchProvider):
 
             if not html or not html.strip():
                 continue
+
+            # Candidate link discovery on directory search results
+            try:
+                from urllib.parse import urlparse
+                parsed_domain = urlparse(query_url).netloc.lower().replace("www.", "")
+                raw_hrefs = re.findall(r'href=["\']([^"\'#?]+(?:/[^"\'#?]+)*)["\']', html, re.IGNORECASE)
+                cand_links = []
+                for href in raw_hrefs:
+                    if any(pattern in href.lower() for pattern in ["/company/", "/companysearchresults/", "/gstin/"]):
+                        full_url = href if href.startswith("http") else f"https://www.{parsed_domain}/{href.lstrip('/')}"
+                        if parsed_domain in full_url.lower() and full_url not in cand_links and full_url != query_url:
+                            cand_links.append(full_url)
+
+                logger.info(
+                    "[GENERIC_WEB_LINK_DISCOVERY] Task=%s Initial_URL='%s' Candidate_URLs=%s",
+                    task.task_id,
+                    query_url,
+                    cand_links,
+                )
+
+                if cand_links:
+                    from app.research.base import score_candidate_url
+                    scored_cands = []
+                    for link in cand_links:
+                        sc, _, rel = score_candidate_url(link, task.target, task.task_type)
+                        if sc >= 0.40 or rel in {"TARGET_ENTITY", "RELATED_ENTITY"}:
+                            scored_cands.append((sc, link))
+
+                    logger.info(
+                        "[GENERIC_WEB_LINK_SCORING] Task=%s Candidate_Scores=%s",
+                        task.task_id,
+                        scored_cands,
+                    )
+
+                    if scored_cands:
+                        scored_cands.sort(key=lambda x: x[0], reverse=True)
+                        best_url = scored_cands[0][1]
+                        sub_html = self.fetcher(best_url)
+                        if sub_html and not detect_bot_or_captcha(sub_html) and not is_failed_or_blocked_response(sub_html, target):
+                            html = sub_html
+                            query_url = best_url
+            except Exception:
+                pass
+
+            logger.info(
+                "[GENERIC_WEB_SELECTED_URL] Task=%s Final_Selected_URL='%s'",
+                task.task_id,
+                query_url,
+            )
 
             challenge = detect_bot_or_captcha(html)
             if challenge:
@@ -129,12 +190,19 @@ class GenericWebResearchProvider(BaseResearchProvider):
 
         return results
 
-    def _resolve_url(self, source: str, target: str) -> Optional[str]:
+    def _resolve_url(self, source: str, target: str, task_type: Optional[str] = None) -> Optional[str]:
+        src_meta = source_registry.get_source(source)
+        if src_meta and hasattr(src_meta, "resolve_target_url"):
+            resolved = src_meta.resolve_target_url(target, task_type=task_type)
+            if resolved:
+                return resolved
+
         if is_url(target):
             return target if "://" in target else f"https://{target}"
 
         src_lower = source.lower()
-        clean_target = re.sub(r"[^a-zA-Z0-9\s-]", "", target).strip().replace(" ", "-")
+        clean_name = re.sub(r"(?i)\s+(?:in\s+[A-Za-z]+|mca\s+company\s+registration|epfo\s+establishment|official\s*website|company\s*registration|search|portal|master\s*data)\b", "", target).strip()
+        clean_target = re.sub(r"[^a-zA-Z0-9\s-]", "", clean_name).strip().replace(" ", "-").lower()
 
         if "quickcompany" in src_lower:
             return f"https://www.quickcompany.in/company/{clean_target}"

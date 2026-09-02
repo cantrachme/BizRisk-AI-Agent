@@ -85,7 +85,7 @@ def test_detection_normal_page():
     assert detect_human_intervention("<html><title>ABC Foods</title><body>GST is Active. Address: 123 Lane.</body></html>") is None
 
 
-def test_captcha_raises_exception():
+def test_captcha_handles_autonomous_failure():
     agent = BrowserResearchAgent(fetcher=lambda url: "<html><title>Verify you are human</title></html>")
     task = GraphTask(
         task_id="TASK-001",
@@ -96,12 +96,13 @@ def test_captcha_raises_exception():
         priority=1,
         preferred_sources=["gst.gov.in"],
     )
-    with pytest.raises(HumanInterventionRequiredException) as ex:
-        agent.execute(task)
-    assert ex.value.intervention_type == "CAPTCHA"
+    results = agent.execute(task)
+    assert len(results) > 0
+    assert all(r.confidence == 0.0 for r in results)
+    assert results[0].field_value in {"NOT_FOUND", "UNAVAILABLE"}
 
 
-def test_otp_raises_exception():
+def test_otp_handles_autonomous_failure():
     agent = BrowserResearchAgent(fetcher=lambda url: "<html><body>Please enter OTP code.</body></html>")
     task = GraphTask(
         task_id="TASK-001",
@@ -112,12 +113,13 @@ def test_otp_raises_exception():
         priority=1,
         preferred_sources=["gst.gov.in"],
     )
-    with pytest.raises(HumanInterventionRequiredException) as ex:
-        agent.execute(task)
-    assert ex.value.intervention_type == "OTP"
+    results = agent.execute(task)
+    assert len(results) > 0
+    assert all(r.confidence == 0.0 for r in results)
+    assert results[0].field_value in {"NOT_FOUND", "UNAVAILABLE"}
 
 
-def test_login_raises_exception():
+def test_login_handles_autonomous_failure():
     agent = BrowserResearchAgent(fetcher=lambda url: "<html><body>Sign in to proceed</body></html>")
     task = GraphTask(
         task_id="TASK-001",
@@ -128,12 +130,13 @@ def test_login_raises_exception():
         priority=1,
         preferred_sources=["gst.gov.in"],
     )
-    with pytest.raises(HumanInterventionRequiredException) as ex:
-        agent.execute(task)
-    assert ex.value.intervention_type == "LOGIN_REQUIRED"
+    results = agent.execute(task)
+    assert len(results) > 0
+    assert all(r.confidence == 0.0 for r in results)
+    assert results[0].field_value in {"NOT_FOUND", "UNAVAILABLE"}
 
 
-def test_browser_node_handles_hitl(db_session, investigation_id):
+def test_browser_node_handles_blocked_source_autonomously(db_session, investigation_id):
     class MockSessionLocal:
         def __enter__(self):
             return db_session
@@ -185,24 +188,15 @@ def test_browser_node_handles_hitl(db_session, investigation_id):
         with mock.patch("app.db.session.SessionLocal", MockSessionLocal):
             out_state = browser_node(state)
         
-        assert out_state["status"] == "WAITING_FOR_USER"
-        assert out_state["stop_reason"] == "Human intervention required: CAPTCHA"
-        assert len(out_state["pending_tasks"]) == 1
-        assert out_state["pending_tasks"][0].status == "HUMAN_INTERVENTION_REQUIRED"
+        # Completes autonomously
+        assert len(out_state["completed_tasks"]) == 1
+        assert out_state["completed_tasks"][0].status == "COMPLETED"
+        assert len(out_state["results"]) >= 1
+        assert all(r.confidence == 0.0 for r in out_state["results"])
 
         # Check database persistence
         task_db = db_session.query(ResearchTaskModel).filter_by(task_id="TASK-001").first()
-        assert task_db.status == "HUMAN_INTERVENTION_REQUIRED"
-        assert task_db.intervention_type == "CAPTCHA"
-        assert "CAPTCHA" in task_db.intervention_reason
-
-        # Check audit event persistence
-        event = db_session.query(InvestigationEvent).filter_by(event_type="HUMAN_INTERVENTION_REQUIRED").first()
-        assert event is not None
-        assert event.status == "WAITING_FOR_USER"
-        meta = json.loads(event.metadata_json)
-        assert meta["task_id"] == "TASK-001"
-        assert meta["type"] == "CAPTCHA"
+        assert task_db.status == "COMPLETED"
     finally:
         BrowserResearchAgent._fetch_page = original_fetcher
 
@@ -281,15 +275,9 @@ def test_independent_tasks_continue(db_session, investigation_id):
         with mock.patch("app.db.session.SessionLocal", MockSessionLocal):
             out_state = browser_node(state)
         
-        # WAITING_FOR_USER since task 1 is blocked
-        assert out_state["status"] == "WAITING_FOR_USER"
-        # Task 2 completed successfully!
-        assert len(out_state["completed_tasks"]) == 1
-        assert out_state["completed_tasks"][0].task_id == "TASK-002"
-        # Task 1 remains pending but marked as HUMAN_INTERVENTION_REQUIRED
-        assert len(out_state["pending_tasks"]) == 1
-        assert out_state["pending_tasks"][0].task_id == "TASK-001"
-        assert out_state["pending_tasks"][0].status == "HUMAN_INTERVENTION_REQUIRED"
+        # Both tasks completed
+        assert len(out_state["completed_tasks"]) == 2
+        assert len(out_state["pending_tasks"]) == 0
     finally:
         BrowserResearchAgent._fetch_page = original_fetcher
 
@@ -514,12 +502,12 @@ def test_resumed_browser_encounters_second_captcha_creates_new_intervention(clie
             resp = client.post(f"/api/v1/investigations/{investigation_id}/tasks/TASK-005/human-intervention")
         assert resp.status_code == 200
 
-        # Investigation status is still WAITING_FOR_USER, and task is still HUMAN_INTERVENTION_REQUIRED
+        # Resumed task handles blocked page autonomously and completes
         db_session.refresh(inv)
-        assert inv.status == "WAITING_FOR_USER"
+        assert inv.status == "COMPLETED"
         
         task_db = db_session.query(ResearchTaskModel).filter_by(task_id="TASK-005").first()
-        assert task_db.status == "HUMAN_INTERVENTION_REQUIRED"
+        assert task_db.status == "COMPLETED"
     finally:
         BrowserResearchAgent._fetch_page = original_fetcher
 

@@ -573,16 +573,19 @@ def test_e2e_captcha_otp_hitl_flow(client, db_session):
         "stop_reason": None,
     }
 
-    # Intercept page fetch with standard mock fetcher to trigger CAPTCHA pausing
+    # Intercept page fetch with standard mock fetcher: pipeline completes autonomously without stalling
     with mock.patch("app.agents.browser.BrowserResearchAgent._fetch_page", staticmethod(mock_fetch_page)):
         output = graph_app.invoke(initial_state)
 
-    # Verify status is WAITING_FOR_USER
+    # Verify status completed autonomously
     db_session.rollback()
     inv = db_session.get(Investigation, inv_id)
-    assert inv.status == "WAITING_FOR_USER"
+    assert inv.status == "COMPLETED"
 
-    # Now verify we can resume via the API (user solved captcha)
+    # Now verify that if an investigation is in WAITING_FOR_USER, we can resume via the API
+    inv.status = "WAITING_FOR_USER"
+    db_session.commit()
+
     def mock_fetch_page_resumed(url: str) -> str:
         return "<html><title>GST Portal</title><body>Active GST Status. Address: 123 Main St, Delhi. Business Activity: Food. Registration Date: 2020-01-01</body></html>"
 

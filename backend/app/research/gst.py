@@ -115,7 +115,7 @@ class GstResearchProvider(BaseResearchProvider):
             val, basis = self._extract_field(task, field_name, page_data, chosen_url, gstin)
             field_conf = chosen_confidence
 
-            if isinstance(val, str) and val in {"NOT_FOUND", "UNAVAILABLE", "SOURCE_UNAVAILABLE"} and task.target != "27ABCDE1234F1Z5":
+            if isinstance(val, str) and val in {"NOT_FOUND", "UNAVAILABLE", "SOURCE_UNAVAILABLE"}:
                 field_conf = 0.0
 
             if chosen_confidence == 0.0 or not page_data.get("text"):
