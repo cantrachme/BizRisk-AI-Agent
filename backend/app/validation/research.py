@@ -15,6 +15,28 @@ VERIFICATION_FIELDS = {
     "website_status",
 }
 
+# verification_status values that mean "the research layer already decided this
+# result does not describe the target entity / is not usable as factual evidence".
+REJECTED_VERIFICATION_STATUSES = {
+    "REJECTED",
+    "ENTITY_MISMATCH",
+    "UNRELATED",
+    "IRRELEVANT",
+}
+
+ADDRESS_FIELDS = {
+    "registered_address", "establishment_address", "contact_address",
+    "principal_business_address", "principal_place_of_business", "corporate_address", "address",
+}
+
+LEGAL_NAME_FIELDS = {
+    "legal_name", "company_name", "business_name", "establishment_name", "trade_name",
+}
+
+BUSINESS_ACTIVITY_FIELDS = {
+    "business_activity", "nature_of_business", "activity", "principal_business_activity",
+}
+
 
 class ResearchResultValidation(BaseModel):
     is_valid: bool
@@ -98,22 +120,37 @@ def validate_research_result(
         else:
             errors.append(f"field_value '{result.field_value}' is a placeholder/status value, not factual evidence")
 
-    from app.research.base import is_address_like, is_valid_legal_name
+    # Anything the research layer already marked as not entity-relevant (wrong
+    # company page, search/navigation page) must never be persisted as evidence.
+    if str(getattr(result, "verification_status", "") or "").strip().upper() in REJECTED_VERIFICATION_STATUSES:
+        errors.append(
+            f"verification_status '{result.verification_status}' — result rejected upstream as not entity-relevant"
+        )
+
+    from app.research.base import (
+        is_address_like,
+        is_valid_business_activity,
+        is_valid_legal_name,
+    )
 
     # Semantic validation for address fields
-    if result.field_name in {
-        "registered_address", "establishment_address", "contact_address",
-        "principal_business_address", "principal_place_of_business", "corporate_address", "address"
-    }:
+    if result.field_name in ADDRESS_FIELDS:
         if isinstance(result.field_value, str) and not is_address_like(result.field_value):
             errors.append(f"field_value '{result.field_value}' is not a valid address structure")
 
     # Semantic validation for company legal name fields
-    if result.field_name in {
-        "legal_name", "company_name", "business_name", "establishment_name", "trade_name"
-    }:
+    if result.field_name in LEGAL_NAME_FIELDS:
         if isinstance(result.field_value, str) and not is_valid_legal_name(result.field_value):
             errors.append(f"field_value '{result.field_value}' is not a valid legal company name")
+
+    # Semantic validation for business-activity fields: unrelated / search /
+    # navigation text, page dumps, bare labels and identifiers cannot become
+    # business-activity evidence.
+    if result.field_name in BUSINESS_ACTIVITY_FIELDS:
+        if isinstance(result.field_value, str) and not is_valid_business_activity(result.field_value):
+            errors.append(
+                f"field_value '{result.field_value[:80]}' is not a valid business-activity description"
+            )
 
     return ResearchResultValidation(
         is_valid=not errors,

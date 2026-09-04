@@ -19,9 +19,11 @@ from app.graph.state import InvestigationState
 
 
 def should_continue_after_qa(state: InvestigationState) -> str:
+    from app.core.config import get_settings
+
     qa_res = state.get("qa_result") or {}
     loop_count = state.get("qa_loop_count") or 0
-    if qa_res.get("status") == "FAIL" and loop_count < 2:
+    if qa_res.get("status") == "FAIL" and loop_count < get_settings().max_qa_loops:
         issues = qa_res.get("issues", [])
         issue_types = {issue.get("type") for issue in issues if isinstance(issue, dict)}
         

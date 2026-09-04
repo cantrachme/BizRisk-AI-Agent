@@ -270,6 +270,26 @@ class SourceRegistryManager:
                 },
             ),
             SourceMetadata(
+                source_id="falconebiz",
+                name="falconebiz.com",
+                display_name="Falcon Ebiz",
+                source_type=SourceType.THIRD_PARTY_REGISTRY,
+                authority_tier=3,
+                supported_task_types=["THIRD_PARTY_RESEARCH"],
+                base_url="https://www.falconebiz.com",
+                priority=2,
+                default_confidence=0.75,
+                config={
+                    # Falcon Ebiz resolves a company page from the name slug + CIN;
+                    # bare name / CIN / search fall back to the directory landing
+                    # page and are rejected by the entity-identity gate.
+                    "cin_name_url_pattern": "https://www.falconebiz.com/company/{slug}-{cin}",
+                    "name_url_pattern": "https://www.falconebiz.com/company/{slug}",
+                    "cin_url_pattern": "https://www.falconebiz.com/company/{cin}",
+                    "search_url_pattern": "https://www.falconebiz.com/search?q={query}",
+                },
+            ),
+            SourceMetadata(
                 source_id="third-party",
                 name="third_party",
                 display_name="Third-Party Source",

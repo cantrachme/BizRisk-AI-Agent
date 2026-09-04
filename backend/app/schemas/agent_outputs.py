@@ -71,3 +71,23 @@ class QAOutput(BaseModel):
     evidence_coverage: float
     score_verified: bool
     entity_verified: bool
+
+
+class ReportNarrative(BaseModel):
+    """
+    LLM-authored narrative for the report. Deliberately contains NO numeric risk
+    score or risk level fields — those remain the exclusive output of the
+    deterministic Risk Engine and are passed to the LLM read-only.
+    """
+    narrative_summary: str = ""
+    cross_source_consistency_summary: str = ""
+    recommended_verification_focus: List[str] = []
+
+
+class QAReasoning(BaseModel):
+    """
+    Advisory-only QA reasoning. Never determines PASS/FAIL — that stays with the
+    deterministic QA checks. Only supplies human-readable advisory notes.
+    """
+    overall_assessment: str = ""
+    advisory_notes: List[str] = []

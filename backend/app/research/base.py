@@ -407,6 +407,20 @@ def is_valid_legal_name(name: str | None) -> bool:
     if re.search(r"\s+\bin\s+.*$", val_lower):
         return False
 
+    # Reject verbose directory/registry titles that carry registration,
+    # identifier, age or date metadata alongside the name — the name should have
+    # been parsed out of these before validation. Structural check, no source or
+    # company names.
+    if (
+        re.search(r"\b[ul][0-9]{5}[a-z]{2}[0-9]{4}[a-z]{3}[0-9]{6}\b", val_lower)        # CIN
+        or re.search(r"\b[0-9]{2}[a-z]{5}[0-9]{4}[a-z][0-9a-z]z[0-9a-z]\b", val_lower)   # GSTIN
+        or re.search(r"\bhaving\s+(?:cin|gstin|llpin|pan|din|tan)\b", val_lower)
+        or re.search(r"\bis\s+\d+\s+(?:year|yr|month|mo|week|wk|day)s?\b", val_lower)
+        or re.search(r"\b(?:date|year)\s+of\s+(?:incorporation|registration|establishment)\b", val_lower)
+        or re.search(r"\b(?:incorporated|registered)\s+(?:on|in|as|since|under|with)\s+\S", val_lower)
+    ):
+        return False
+
     # Reject placeholders and headers
     invalid_keywords = {
         "not_found", "unavailable", "unknown", "error", "blocked", "irrelevant",
@@ -437,6 +451,115 @@ def is_valid_legal_name(name: str | None) -> bool:
     return True
 
 
+# Closed-class English connectives. A genuine activity *description* almost
+# always contains at least one of these ("manufacture OF ...", "trade AND ...");
+# a navigation bar ("Home Products Services Careers Contact") does not. This is a
+# grammatical signal, not a phrase blacklist.
+_ACTIVITY_FUNCTION_WORDS = {
+    "of", "and", "the", "in", "for", "with", "to", "or", "on", "at", "by",
+    "from", "a", "an", "&", "as", "including", "related",
+}
+
+# Industry-classification (NIC / ISIC / SIC) dictionary text has a characteristic
+# shape: a class label followed by a *bracketed or parenthesised gloss* that
+# enumerates or exemplifies what the class covers, e.g.
+#   "Printing [Includes printing of newspapers, books, periodicals ...]"
+#   "Other computer related activities [for example maintenance of websites ...]"
+#   "Wholesale trade [this class includes wholesale on a fee basis ...]"
+#   "Manufacture of paper (n.e.c.)"
+# The gloss opens with a closed set of taxonomy connectives (includes/excludes/
+# for example/such as/e.g./i.e./covers/comprises/"this class includes"/n.e.c.).
+# That is reference material, never a business's own line-of-business statement.
+# Structural/format signature only -- no company names, no activity phrase list.
+# A parenthetical that is *not* one of these connectives (a product line, a unit,
+# a technology, a location) is left alone.
+_CLASSIFICATION_GLOSS_RE = re.compile(
+    r"[\[(]\s*"
+    r"(?:(?:this|also)\s+)?"
+    r"(?:(?:sub[-\s]?class|class|group|division|section|category|heading|code)\s+)?"
+    r"(?:"
+    r"includes?|excludes?|including|excluding|incl\.?|excl\.?|covers?|comprises?|comprising"
+    r"|for\s+example|e\.?\s?g\.?|such\s+as|namely|i\.?\s?e\.?"
+    r"|n\.?\s?e\.?\s?c\.?|not\s+elsewhere\s+classified"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_valid_business_activity(value: str | None) -> bool:
+    """
+    Generic structural check that a value looks like a real business-activity /
+    line-of-business description rather than navigation text, a search snippet,
+    a page dump, a bare field label, or an identifier.
+
+    Purely structural: no company names, no source URLs, no fixed list of "bad"
+    activity phrases. It accepts terse-but-real values ("Software", "IT services",
+    "Wholesale trade") and rejects menus / snippets / labels / markup.
+    """
+    if not value or not isinstance(value, str):
+        return False
+    v = value.strip()
+    if len(v) < 3 or len(v) > 250:
+        return False
+
+    # A description is a single line, not a multi-field block or a page dump.
+    if any(c in v for c in ("\n", "\r", "\t")):
+        return False
+
+    low = v.lower()
+
+    # URLs, e-mail addresses, or residual markup are never an activity value.
+    if re.search(r"https?://|www\.\w|\S+@\S+\.\S+|<[a-z/][^>]*>|&[a-z]{2,6};", low):
+        return False
+
+    # Truncated search snippet / interrogative search query.
+    if "…" in v or v.endswith("...") or " ... " in v or "?" in v:
+        return False
+
+    # NIC / ISIC classification-dictionary entry ("<class> [Includes ...]"),
+    # not a company's own activity description.
+    if _CLASSIFICATION_GLOSS_RE.search(v):
+        return False
+
+    # Must be predominantly natural language, not an id / code / number blob.
+    letters = len(re.findall(r"[A-Za-z]", v))
+    if letters / max(len(v), 1) < 0.5:
+        return False
+
+    # Identifier shapes (GSTIN / CIN) can never be an activity.
+    upper = v.upper()
+    if re.search(r"\b[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b", upper) or \
+       re.search(r"\b[UL][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6}\b", upper):
+        return False
+
+    words = re.findall(r"[A-Za-z][A-Za-z&/.\-']*", v)
+    if not (1 <= len(words) <= 40):
+        return False
+
+    # Bare field label with nothing descriptive after it (e.g. "Nature of
+    # Business Activities:"). Matched as a grammatical pattern, not a fixed list.
+    if re.fullmatch(
+        r"(?:the\s+)?(?:nature|type|kind|principal|primary|main|category|class|code|"
+        r"description|details?|industry|sector|line)\s+(?:of\s+)?"
+        r"(?:business(?:\s+activit(?:y|ies))?|activit(?:y|ies)|industry|operations?|work)"
+        r"\s*[:\-–—]?",
+        low,
+    ):
+        return False
+
+    # Navigation-menu shape: several separator-delimited items.
+    if len(re.findall(r"\s[|/•·»›▸≫>]\s|\s[–-]\s\S", v)) >= 3:
+        return False
+
+    # Navigation menu without separators: many items, each capitalised, and not a
+    # single closed-class connective anywhere -> a menu bar, not a description.
+    if len(words) >= 5 and all(w[:1].isupper() for w in words):
+        if not any(w.lower() in _ACTIVITY_FUNCTION_WORDS for w in words):
+            return False
+
+    return True
+
+
 def normalize_location(location: str | None) -> str | None:
     if not location or not isinstance(location, str):
         return None
@@ -463,10 +586,29 @@ def normalize_location(location: str | None) -> str | None:
     return ", ".join(deduped)
 
 
-def extract_address_from_text(text: str | None) -> str:
+def extract_address_from_text(
+    text: str | None,
+    target: str | None = None,
+    target_confirmed: bool = False,
+) -> str:
+    """Extract a registered / establishment address from page text.
+
+    When ``target`` is supplied and the page identity is not confirmed
+    (``target_confirmed`` is False), an address is only returned if it is
+    explicitly associated with the target on the page (a target name token
+    appears in/near the address block). This prevents a source organisation's
+    own contact address from being attributed to the investigated entity.
+    """
     if not text:
         return "NOT_FOUND"
     lines = [line.strip() for line in text.split("\n") if line.strip()]
+    require_assoc = bool(target) and not target_confirmed
+    target_tokens = _target_name_tokens(target) if require_assoc else set()
+    # If the target has no distinctive legal-name tokens (e.g. a bare
+    # GSTIN/CIN), name-association is impossible; fall back to unconstrained
+    # extraction. Identifier-conflict pages are already rejected upstream.
+    if require_assoc and not target_tokens:
+        require_assoc = False
     address_prefixes = [
         "registered address of", "registered office address of",
         "principal place of business", "principal place",
@@ -476,6 +618,8 @@ def extract_address_from_text(text: str | None) -> str:
     for i, line in enumerate(lines):
         line_lower = line.lower()
         if any(neg in line_lower for neg in ["no address", "address not", "not published", "not available", "unknown address", "same address", "similar address"]):
+            continue
+        if require_assoc and not _address_is_target_associated(lines, i, target_tokens):
             continue
         for prefix in address_prefixes:
             if prefix in line_lower:
@@ -501,6 +645,8 @@ def extract_address_from_text(text: str | None) -> str:
     for i, line in enumerate(lines):
         line_lower = line.lower()
         if any(neg in line_lower for neg in ["same address", "similar address", "search", "menu", "nature of business"]):
+            continue
+        if require_assoc and not _address_is_target_associated(lines, i, target_tokens):
             continue
         if re.search(r"\b\d{6}\b", line) and any(state in line_lower for state in indian_states):
             clean_line = re.sub(r"^(?:at\s+|is\s+at\s+|registered\s+address\s+of\s+[A-Za-z0-9\s.,&()/-]+\s+is|principal\s+place\s+of\s+business|registered\s+address|address|office)\s*[:\-]?", "", line, flags=re.IGNORECASE).strip()
@@ -550,7 +696,14 @@ def extract_business_activity_from_text(text: str | None) -> str:
             # Clean off trailing labels
             candidate = re.split(r"(?i)\s+(?:cin|gstin|company\s+status|status|date\s+of|registered\s+office)\b", candidate)[0].strip()
             cand_clean = re.sub(r"^[:\-–—\s]+|[.:\-–—\s]+$", "", candidate).strip()
-            if cand_clean.lower() not in invalid_activities and len(cand_clean) >= 4 and not re.match(r"^\d+$", cand_clean):
+            if (
+                cand_clean.lower() not in invalid_activities
+                and len(cand_clean) >= 4
+                and not re.match(r"^\d+$", cand_clean)
+                # NIC/ISIC classification-dictionary text ("<class> [Includes ...]")
+                # is reference material, not the target's own activity.
+                and not _CLASSIFICATION_GLOSS_RE.search(cand_clean)
+            ):
                 return cand_clean
 
     return "NOT_FOUND"
@@ -623,6 +776,42 @@ def clean_legal_name_candidate(name_candidate: str | None) -> str | None:
     for pat in suffix_patterns:
         name = re.sub(pat, "", name).strip()
 
+    # Directory / registry pages frequently append registration, identifier, age
+    # or date metadata to the entity name in the page <title>, e.g.
+    #   "<NAME> HAVING CIN <cin> IS 45 YEARS, 2 MONTHS & 2 DAYS OLD"
+    #   "<NAME> CIN: <cin> | Company Details"
+    #   "<NAME> incorporated on 12-03-1981"
+    # A real legal entity name never contains these. Truncate the candidate at
+    # the first such marker. Purely structural / grammatical — no source or
+    # company names.
+    name = re.split(
+        r"(?i)\b(?:"
+        r"having\s+(?:cin|gstin|llpin|pan|din|tan)\b"
+        r"|(?:cin|gstin|llpin|din|pan|tan)\s*[:#=-]"
+        r"|is\s+\d+\s+(?:year|yr|month|mo|week|wk|day)s?\b"
+        r"|incorporated\s+(?:on|in|as|since)\b"
+        r"|registered\s+(?:on|in|at|as|since|under|with|address|office)\b"
+        r"|(?:date|year)\s+of\s+(?:incorporation|registration|establishment)\b"
+        r"|(?:established|founded|incorporated)\s+(?:on|in)\s+\d"
+        r")",
+        name,
+        maxsplit=1,
+    )[0].strip()
+
+    # A statutory identifier token embedded anywhere in the name is metadata,
+    # never part of the name itself — cut at the first one.
+    name = re.split(
+        r"(?i)\b(?:"
+        r"[UL][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6}"      # CIN
+        r"|[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]"   # GSTIN
+        r"|[A-Z]{3}-[0-9]{4}"                                 # LLPIN
+        r")\b",
+        name,
+        maxsplit=1,
+    )[0].strip()
+
+    name = re.sub(r"[.,\-–—:|/&\s]+$", "", name).strip()
+
     # Strip any trailing "in <location>" query contamination generically (e.g. "TATA CONSULTANCY SERVICES LIMITED in maharashtra,india")
     name = re.sub(r"(?i)\s+\bin\s+.*$", "", name).strip()
     name = re.sub(r"(?i)\s+(?:mca\s+company\s+registration|epfo\s+establishment|official\s+website|company\s+registration|master\s+data)\b.*$", "", name).strip()
@@ -651,7 +840,9 @@ def clean_legal_name_candidate(name_candidate: str | None) -> str | None:
         "not found", "access denied", "forbidden", "duckduckgo", "search results", "search",
         "of business", "nature of business", "business activity", "registered office",
         "s and logos appearing on the site", "trademarks and logos appearing on the site",
-        "terms of use", "privacy policy", "all rights reserved", "something went wrong", "error"
+        "terms of use", "privacy policy", "all rights reserved", "something went wrong", "error",
+        "cin", "gstin", "llpin", "din", "pan", "tan", "having cin", "having gstin",
+        "date of incorporation", "date of registration", "company details", "company profile"
     }
 
     portal_titles = [
@@ -720,6 +911,207 @@ def classify_entity_relationship(target: str, domain: str, page_title: str, page
         return "RELATED_ENTITY"
 
     return "UNRELATED"
+
+
+_GSTIN_RE = re.compile(r"\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z])\b")
+_CIN_RE = re.compile(r"\b([UL][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6})\b")
+_NAME_STOP = {
+    "pvt", "private", "ltd", "limited", "llp", "llc", "inc", "incorporated",
+    "corp", "corporation", "co", "company", "the", "and", "of", "group",
+    "india", "official", "website",
+}
+_LEGAL_SUFFIX_RE = re.compile(
+    r"\b(?:pvt\.?|private|ltd\.?|limited|llp|llc|inc\.?|incorporated|corp\.?|corporation|gmbh|s\.?a\.?|plc)\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_identifier(raw: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", raw or "").upper()
+
+
+def _distinctive_name_tokens(text: str) -> set[str]:
+    return {
+        t for t in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(t) > 2 and t not in _NAME_STOP
+    }
+
+
+# Planner appends these hint words to a target string (e.g. "<name> EPFO
+# establishment", "<name> MCA company registration"). They are not part of the
+# legal name and must not count as distinctive identity tokens.
+_SEARCH_HINT_WORDS = {
+    "epfo", "epf", "mca", "gst", "gstin", "cin", "establishment", "registration",
+    "registered", "company", "companies", "master", "data", "portal", "search",
+    "records", "record", "verification", "verify", "profile", "details", "detail",
+    "financials", "corporate", "affairs", "ministry", "taxpayer",
+}
+
+
+def _strip_search_hints(name: str | None) -> str:
+    """Drop a trailing run of planner-appended search-hint words from a target."""
+    if not name:
+        return ""
+    toks = str(name).split()
+    while toks and re.sub(r"[^a-z]", "", toks[-1].lower()) in _SEARCH_HINT_WORDS:
+        toks.pop()
+    return " ".join(toks)
+
+
+def _target_name_tokens(target: str) -> set[str]:
+    """Distinctive tokens of the target's legal name, excluding identifier tokens
+    and planner search hints."""
+    stripped = _strip_search_hints(target)
+    stripped = _GSTIN_RE.sub(" ", stripped.upper())
+    stripped = _CIN_RE.sub(" ", stripped)
+    return {t for t in _distinctive_name_tokens(stripped) if t not in _SEARCH_HINT_WORDS}
+
+
+_LEGAL_NAME_SPAN_RE = re.compile(
+    r"([A-Za-z][A-Za-z0-9&.\-'()/ ]{2,110}?\b"
+    r"(?:pvt\.?|private|ltd\.?|limited|llp|llc|inc\.?|incorporated|corp\.?|corporation|gmbh|plc))\b",
+    re.IGNORECASE,
+)
+
+
+def _page_claimed_name_tokens(page_title: str, page_text: str) -> set[str]:
+    """
+    Distinctive tokens of the *legal name the page itself claims to be about* -
+    from the page title (before any " - "/"|" boilerplate) and the first
+    legal-name span in the leading page text. Only the entity-name span is used,
+    not the surrounding line, so status/label words don't leak in.
+    """
+    tokens: set[str] = set()
+
+    title_head = re.split(r"\s+[-|–—:]\s+|\s*\|\s*", (page_title or ""))[0]
+    m = _LEGAL_NAME_SPAN_RE.search(title_head)
+    tokens |= {t for t in _distinctive_name_tokens(m.group(1) if m else title_head)
+               if t not in _SEARCH_HINT_WORDS}
+
+    for line in (page_text or "")[:2500].split("\n"):
+        m = _LEGAL_NAME_SPAN_RE.search(line.strip())
+        if m:
+            cand = {t for t in _distinctive_name_tokens(m.group(1)) if t not in _SEARCH_HINT_WORDS}
+            if cand:
+                tokens |= cand
+                break
+    return tokens
+
+
+def third_party_identity_verdict(target: str, page_title: str, page_text: str) -> str:
+    """
+    Whether a third-party directory / registry page describes ``target``.
+
+    Returns one of:
+      * ``"MATCH"``       - positive multi-attribute agreement: a shared strong
+                            identifier (GSTIN/CIN), or a near-complete legal-name
+                            match with no competing entity name.
+      * ``"CONFLICT"``    - a strong identifier disagrees, or the page names a
+                            clearly different incorporated entity.
+      * ``"INSUFFICIENT"``- identity cannot be positively confirmed (e.g. only a
+                            single shared generic/name token).
+
+    Generic: no company names, identifiers, or addresses are special-cased.
+    """
+    title = page_title or ""
+    text = page_text or ""
+    combined_up = f"{title}\n{text}".upper()
+    target_up = (target or "").upper()
+
+    # 1. Strong identifiers.
+    id_confirmed = False
+    for rx in (_GSTIN_RE, _CIN_RE):
+        t_ids = {_normalize_identifier(m) for m in rx.findall(target_up)}
+        if not t_ids:
+            continue
+        p_ids = {_normalize_identifier(m) for m in rx.findall(combined_up)}
+        if not p_ids:
+            continue
+        if t_ids & p_ids:
+            id_confirmed = True
+        else:
+            return "CONFLICT"
+    if id_confirmed:
+        return "MATCH"
+
+    # 2. Legal-name agreement.
+    t_tokens = _target_name_tokens(target)
+    if not t_tokens:
+        return "INSUFFICIENT"
+
+    p_tokens = _page_claimed_name_tokens(title, text)
+    if not p_tokens:
+        return "INSUFFICIENT"
+
+    shared = t_tokens & p_tokens
+    recall = len(shared) / len(t_tokens)
+    page_extra = p_tokens - t_tokens  # distinctive tokens the page's entity has
+
+    # A single shared token (when the target has several) is never enough.
+    if len(shared) <= 1 and len(t_tokens) >= 2:
+        return "CONFLICT" if page_extra else "INSUFFICIENT"
+
+    if recall >= 1.0 and not page_extra:
+        return "MATCH"
+    if recall >= 0.6 and not page_extra:
+        # page name is a subset/prefix of the target name, nothing contradicts it
+        return "MATCH"
+    if page_extra and recall < 1.0:
+        # page names a different incorporated entity that shares only part of
+        # the target's name
+        return "CONFLICT"
+    return "INSUFFICIENT"
+
+
+def _address_is_target_associated(lines: list[str], idx: int, target_tokens: set[str]) -> bool:
+    """A candidate address at ``lines[idx]`` is target-associated when a target
+    legal-name token appears on that line or within the few lines above it (the
+    label / heading that introduces the address)."""
+    if not target_tokens:
+        return False
+    window = " ".join(lines[max(0, idx - 3): idx + 1]).lower()
+    return any(tok in window for tok in target_tokens)
+
+
+def page_conflicts_with_target(target: str, page_title: str, page_text: str) -> bool:
+    """
+    Generic, structural check that a fetched page *positively identifies a
+    different legal entity* than ``target`` -- used to discard wrong-company
+    registry pages before extraction.
+
+    It returns True only when there is affirmative evidence of a mismatch:
+      * the target carries a GSTIN / CIN and the page shows one of the same kind
+        that does not match (normalised, hyphen/space tolerant), or
+      * the target has >=2 distinctive name tokens, the page title names a
+        legal entity (has an incorporation suffix), and shares none of them.
+
+    "Cannot confirm identity" is NOT a conflict -- those pages are left for the
+    downstream semantic / identifier validation to judge.
+    """
+    target = target or ""
+    title = page_title or ""
+    text = page_text or ""
+    combined = f"{title}\n{text}"
+
+    t_up = target.upper()
+    for rx in (_GSTIN_RE, _CIN_RE):
+        t_ids = {_normalize_identifier(m) for m in rx.findall(t_up)}
+        if not t_ids:
+            continue
+        p_ids = {_normalize_identifier(m) for m in rx.findall(combined.upper())}
+        if p_ids and not (t_ids & p_ids):
+            return True
+
+    t_tokens = _distinctive_name_tokens(target)
+    if len(t_tokens) >= 2:
+        title_tokens = _distinctive_name_tokens(title)
+        if title_tokens and _LEGAL_SUFFIX_RE.search(title) and not (t_tokens & title_tokens):
+            # Title names an incorporated entity, none of the target's
+            # distinctive tokens are anywhere on the page -> different company.
+            if not (t_tokens & _distinctive_name_tokens(text[:2000])):
+                return True
+
+    return False
 
 
 def score_candidate_url(res_url: str, target: str, task_type: str) -> tuple[float, str, str]:

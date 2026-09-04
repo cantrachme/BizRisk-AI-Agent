@@ -28,6 +28,8 @@ from app.research.base import (
     is_failed_or_blocked_response,
     is_url,
     is_valid_legal_name,
+    page_conflicts_with_target,
+    third_party_identity_verdict,
     sanitize_prompt_injection,
     score_candidate_url,
     classify_entity_relationship,
@@ -56,6 +58,20 @@ SUPPORTED_TASK_TYPES = {
     "GENERAL_WEB_RESEARCH",
     "THIRD_PARTY_RESEARCH",
 }
+
+# Verification task types whose output is persisted as factual entity evidence.
+# For these, a fetched page that does not correspond to the target entity is
+# discarded before extraction (discovery task types are intentionally excluded --
+# their job is to explore candidates).
+FACTUAL_IDENTITY_TASK_TYPES = {
+    "GST_VERIFICATION",
+    "MCA_VERIFICATION",
+    "EPFO_VERIFICATION",
+}
+
+# Max characters of page text retained inside a discovery candidate's
+# ``source_text`` (prevents multi-KB/MB raw page dumps from being persisted).
+_MAX_DISCOVERY_SOURCE_TEXT = 1200
 
 
 def detect_human_intervention(html: str) -> str | None:
@@ -282,6 +298,7 @@ class BrowserResearchAgent:
         chosen_confidence = 0.0
         chosen_page_data = None
         chosen_authority_tier = 1
+        source_succeeded = False
 
         attempt_order = 0
         for source in candidates:
@@ -590,6 +607,23 @@ class BrowserResearchAgent:
                         page_text=page_data.get("text") or "",
                     )
                     page_data["relationship"] = actual_rel
+                    page_data["entity_conflict"] = page_conflicts_with_target(
+                        task.target,
+                        page_data.get("title") or "",
+                        page_data.get("text") or "",
+                    )
+                    identity_verdict = third_party_identity_verdict(
+                        task.target,
+                        page_data.get("title") or "",
+                        page_data.get("text") or "",
+                    )
+                    page_data["identity_verdict"] = identity_verdict
+                    # A field value bound to the target's identity (address,
+                    # incorporation date, ...) may only be trusted when the page
+                    # is a confirmed record of the target entity.
+                    page_data["target_confirmed"] = (
+                        actual_rel == "TARGET_ENTITY" or identity_verdict == "MATCH"
+                    )
 
                     if task.task_type == "WEBSITE_VERIFICATION":
                         if actual_rel not in {"TARGET_ENTITY", "RELATED_ENTITY"}:
@@ -618,7 +652,18 @@ class BrowserResearchAgent:
                         cand_confidence = 0.85 if actual_rel == "TARGET_ENTITY" else 0.50
 
                     elif task.task_type == "THIRD_PARTY_RESEARCH":
-                        if actual_rel not in {"TARGET_ENTITY", "RELATED_ENTITY"}:
+                        # A third-party registry page is only usable as target
+                        # evidence when its identity positively matches the target
+                        # (shared strong identifier OR near-complete legal-name
+                        # agreement with no competing entity name). A shared
+                        # single generic token is never enough; a conflicting
+                        # identifier or a differently-named entity is rejected.
+                        if identity_verdict != "MATCH" or page_data.get("entity_conflict"):
+                            _reason = (
+                                "Third-party page conflicts with target identity"
+                                if (identity_verdict == "CONFLICT" or page_data.get("entity_conflict"))
+                                else "Third-party page identity could not be confirmed for the target entity"
+                            )
                             self._save_browser_attempt(
                                 investigation_id=investigation_id,
                                 task=task,
@@ -633,7 +678,63 @@ class BrowserResearchAgent:
                                 title=page_data.get("title"),
                                 text_length=len(page_data.get("text") or ""),
                                 relevance_result="ENTITY_MISMATCH",
-                                failure_reason=f"Third-party page represents {actual_rel}, not direct target entity",
+                                failure_reason=_reason,
+                                confidence=0.0,
+                                selected_as_evidence=False,
+                            )
+                            if use_live_session:
+                                from app.core.browser_session_manager import browser_session_manager
+                                browser_session_manager.close_session(investigation_id, task.task_id, source)
+                            continue
+
+                    elif task.task_type == "GENERAL_WEB_RESEARCH":
+                        if page_data.get("entity_conflict"):
+                            self._save_browser_attempt(
+                                investigation_id=investigation_id,
+                                task=task,
+                                source_name=source_name,
+                                source=source,
+                                url=research_url,
+                                attempt_order=attempt_order,
+                                started_at=started_at,
+                                completed_at=datetime.now(timezone.utc),
+                                status="REJECTED",
+                                http_result="Entity Mismatch",
+                                title=page_data.get("title"),
+                                text_length=len(page_data.get("text") or ""),
+                                relevance_result="ENTITY_MISMATCH",
+                                failure_reason="General web page conflicts with target identity",
+                                confidence=0.0,
+                                selected_as_evidence=False,
+                            )
+                            if use_live_session:
+                                from app.core.browser_session_manager import browser_session_manager
+                                browser_session_manager.close_session(investigation_id, task.task_id, source)
+                            continue
+
+                    elif task.task_type in FACTUAL_IDENTITY_TASK_TYPES:
+                        # Generic page-relevance / entity-identity gate for
+                        # official-registry verification: a page that positively
+                        # identifies a *different* legal entity (conflicting
+                        # GSTIN/CIN, or a differently-named incorporated entity
+                        # with no target tokens) must not be extracted into
+                        # factual evidence. "Cannot confirm" is not rejected.
+                        if actual_rel == "UNRELATED" and page_data.get("entity_conflict"):
+                            self._save_browser_attempt(
+                                investigation_id=investigation_id,
+                                task=task,
+                                source_name=source_name,
+                                source=source,
+                                url=research_url,
+                                attempt_order=attempt_order,
+                                started_at=started_at,
+                                completed_at=datetime.now(timezone.utc),
+                                status="REJECTED",
+                                http_result="Entity Mismatch",
+                                title=page_data.get("title"),
+                                text_length=len(page_data.get("text") or ""),
+                                relevance_result="ENTITY_MISMATCH",
+                                failure_reason="Page does not correspond to the target entity (relationship=UNRELATED)",
                                 confidence=0.0,
                                 selected_as_evidence=False,
                             )
@@ -725,6 +826,11 @@ class BrowserResearchAgent:
         retrieved_time = datetime.now(timezone.utc).isoformat()
         results: List[ResearchResult] = []
 
+        # If the finally-selected page positively identifies a different legal
+        # entity, no field from it may be persisted as factual evidence
+        # (belt-and-braces for task types not covered by the per-candidate gate).
+        page_entity_unrelated = bool((chosen_page_data or {}).get("entity_conflict"))
+
         for index, field_name in enumerate(task.required_fields, start=1):
             val, basis = self._extract_field_value_with_basis(
                 task=task,
@@ -736,7 +842,11 @@ class BrowserResearchAgent:
             if isinstance(val, str) and val in {"NOT_FOUND", "UNAVAILABLE", "SOURCE_UNAVAILABLE"}:
                 field_confidence = 0.0
 
-            if chosen_confidence == 0.0 or not chosen_page_data.get("text"):
+            if page_entity_unrelated and field_name not in {"candidate_entities", "page_title", "title", "page_text", "content", "source_text"}:
+                field_confidence = 0.0
+                verif_status = "REJECTED"
+                auth_tier = 5
+            elif chosen_confidence == 0.0 or not chosen_page_data.get("text"):
                 verif_status = "SOURCE_UNAVAILABLE"
                 auth_tier = 4
             elif isinstance(val, str) and val in {"NOT_FOUND", "UNAVAILABLE"}:
@@ -765,14 +875,23 @@ class BrowserResearchAgent:
                 )
             )
 
+        # The research task always *finishes*, but "TASK_COMPLETED" must not
+        # imply the source succeeded. Report SUCCESS only when a page actually
+        # opened for this source AND at least one usable field was extracted;
+        # otherwise the task completed with no usable data.
+        produced_usable = source_succeeded and any((r.confidence or 0.0) > 0.0 for r in results)
         self._record_browser_event(
             investigation_id=investigation_id,
             task_id=task.task_id,
             event_type="TASK_COMPLETED",
-            status="SUCCESS",
+            status="SUCCESS" if produced_usable else "NO_DATA",
             source_name=chosen_source,
             url=chosen_url,
-            message=f"Research task completed for {task.task_type}",
+            message=(
+                f"Research task completed for {task.task_type}"
+                if produced_usable
+                else f"Research task completed for {task.task_type} with no usable data"
+            ),
         )
 
         return results
@@ -790,6 +909,10 @@ class BrowserResearchAgent:
                 from app.core.config import get_settings
                 with sync_playwright() as p:
                     headless = get_settings().playwright_headless
+                    logger.info(
+                        "[BROWSER_LAUNCH] _fetch_page fallback headless=%s (env override=%r)",
+                        headless, os.environ.get("PLAYWRIGHT_HEADLESS"),
+                    )
                     browser = p.chromium.launch(headless=headless)
                     context = browser.new_context(
                         java_script_enabled=True,
@@ -989,6 +1112,12 @@ class BrowserResearchAgent:
 
         cleaned_title = BrowserResearchAgent._clean_legal_name_candidate(title)
         delimited_text = f"<UNTRUSTED_WEBSITE_CONTENT>\n{text}\n</UNTRUSTED_WEBSITE_CONTENT>" if text else ""
+        # Discovery evidence keeps only a bounded, human-readable excerpt of the
+        # page — never a raw multi-KB/MB HTML/page dump.
+        _excerpt = re.sub(r"\s+", " ", text).strip()[:_MAX_DISCOVERY_SOURCE_TEXT]
+        bounded_source_text = (
+            f"<UNTRUSTED_WEBSITE_CONTENT>\n{_excerpt}\n</UNTRUSTED_WEBSITE_CONTENT>" if _excerpt else ""
+        )
 
         if field_name == "candidate_entities":
             if not text:
@@ -1003,7 +1132,7 @@ class BrowserResearchAgent:
                         if cand_name and cand_name not in [e["name"] for e in discovered_entities]:
                             discovered_entities.append({
                                 "name": cand_name,
-                                "source_text": delimited_text,
+                                "source_text": bounded_source_text,
                                 "confidence": 1.0,
                             })
             if not discovered_entities:
@@ -1012,7 +1141,7 @@ class BrowserResearchAgent:
                 discovered_entities = [
                     {
                         "name": name_val,
-                        "source_text": delimited_text,
+                        "source_text": bounded_source_text,
                         "confidence": 1.0,
                     }
                 ]
@@ -1102,7 +1231,15 @@ class BrowserResearchAgent:
                 "principal_place_of_business",
                 "corporate_address",
             }:
-                addr = BrowserResearchAgent._extract_address_from_text(text)
+                # An address is only attributable to the target when the page is
+                # a confirmed record of the target, or the address is explicitly
+                # associated with the target on the page. Otherwise a source
+                # organisation's own contact address would be mis-attributed.
+                addr = extract_address_from_text(
+                    text,
+                    target=task.target,
+                    target_confirmed=bool(page_data.get("target_confirmed")),
+                )
                 from app.research.base import is_address_like
                 if addr == "NOT_FOUND" or not is_address_like(addr):
                     return "NOT_FOUND", "No valid structured address pattern matched in page text"

@@ -798,7 +798,20 @@ def export_investigation_report_csv(
     return export_investigation_report(format="csv", investigation=investigation, db=db)
 
 
-test_router = APIRouter(tags=["testing"])
+def _require_test_endpoints_enabled() -> None:
+    """Blocks the /test/* agent-inspection endpoints unless explicitly enabled.
+
+    These endpoints run agents directly without authentication; they are for
+    local development only and must stay disabled in production
+    (ENABLE_TEST_ENDPOINTS=false / enforced for ENVIRONMENT=production).
+    """
+    from app.core.config import get_settings
+
+    if not get_settings().enable_test_endpoints:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+
+test_router = APIRouter(tags=["testing"], dependencies=[Depends(_require_test_endpoints_enabled)])
 
 from pydantic import BaseModel, Field
 

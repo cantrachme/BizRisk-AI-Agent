@@ -31,9 +31,16 @@ def test_production_environment_validation():
     with pytest.raises(ValueError, match="debug must be False in production environment"):
         Settings(environment="production", debug=True)
 
-    prod_settings = Settings(environment="production", debug=False)
+    # Unauthenticated agent-inspection endpoints must be disabled in production.
+    with pytest.raises(ValueError, match="enable_test_endpoints must be False in production"):
+        Settings(environment="production", debug=False, enable_test_endpoints=True)
+
+    prod_settings = Settings(
+        environment="production", debug=False, enable_test_endpoints=False
+    )
     assert prod_settings.environment == "production"
     assert prod_settings.debug is False
+    assert prod_settings.enable_test_endpoints is False
 
 
 def test_db_session_rollback_on_failure():

@@ -221,7 +221,7 @@ def test_scenario_19_third_party_labeling():
         result_id="RES-1", task_id="T1", field_name="company_status",
         field_value="ACTIVE", source_name="zaubacorp.com",
         retrieved_at="2026-08-30T00:00:00Z", confidence=0.70,
-        authority_tier=3
+        verification_status="VERIFIED", authority_tier=3
     )
     assert ev.authority_tier == 3
     summary = build_verification_summary([ev])
@@ -238,7 +238,8 @@ def test_scenario_20_official_unavailable_third_party_exists():
     ev_3p = ResearchResult(
         result_id="RES-2", task_id="T2", field_name="company_status",
         field_value="ACTIVE", source_name="zaubacorp.com",
-        retrieved_at="2026-08-30T00:00:00Z", confidence=0.75
+        retrieved_at="2026-08-30T00:00:00Z", confidence=0.75,
+        verification_status="VERIFIED"
     )
     summary = build_verification_summary([ev_gst, ev_3p])
     assert summary["gst"]["status"] == "UNAVAILABLE"

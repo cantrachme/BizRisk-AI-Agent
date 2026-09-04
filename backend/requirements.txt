@@ -9,3 +9,7 @@ psycopg[binary]
 alembic
 
 playwright
+
+# Real LLM provider (only imported when LLM_PROVIDER=anthropic; the mock/test
+# path never requires this package).
+anthropic

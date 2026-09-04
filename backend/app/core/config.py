@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     llm_token_limit: int = 4096
     llm_timeout: float = 30.0
     llm_retry_policy: str = '{"max_retries": 3, "backoff_factor": 2}'
+    # Real-provider configuration (environment driven). The API key itself is never
+    # stored here; the Anthropic provider reads ANTHROPIC_API_KEY / LLM_API_KEY from
+    # the environment at call time so it cannot leak through a Settings repr.
+    llm_anthropic_model: str = "claude-opus-5"
+    llm_max_retries: int = 2
 
     evidence_freshness_gst_days: int = 7
     evidence_freshness_mca_days: int = 30
@@ -32,6 +37,17 @@ class Settings(BaseSettings):
     max_research_tasks: int = 15
     max_llm_calls: int = 50
     token_budget: int = 100000
+
+    # Entity-resolution acceptance threshold (0.0-1.0). A resolved match at or
+    # above this similarity score proceeds to risk analysis; below it the
+    # investigation loops back to the planner for additional research.
+    entity_resolution_threshold: float = 0.75
+    # Maximum number of QA -> planner correction loops before an investigation is
+    # released as PARTIALLY_COMPLETED / FAILED.
+    max_qa_loops: int = 2
+    # Gate the unauthenticated /api/v1/test/* agent-inspection endpoints. Must be
+    # false in a production deployment.
+    enable_test_endpoints: bool = True
 
     cors_origins: list[str] = ["http://localhost:3000"]
     playwright_headless: bool = True
@@ -59,6 +75,7 @@ class Settings(BaseSettings):
         "max_research_tasks",
         "max_llm_calls",
         "token_budget",
+        "max_qa_loops",
         mode="after",
     )
     @classmethod
@@ -67,12 +84,23 @@ class Settings(BaseSettings):
             raise ValueError("Limit must be non-negative")
         return v
 
+    @field_validator("entity_resolution_threshold", mode="after")
+    @classmethod
+    def validate_resolution_threshold(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("entity_resolution_threshold must be between 0.0 and 1.0")
+        return v
+
     def model_post_init(self, __context: Any) -> None:
         if self.environment.lower() in ("production", "prod"):
             if self.debug:
                 raise ValueError("debug must be False in production environment")
             if not self.database_url:
                 raise ValueError("database_url is required in production environment")
+            if self.enable_test_endpoints:
+                raise ValueError(
+                    "enable_test_endpoints must be False in production environment"
+                )
 
     model_config = SettingsConfigDict(
         env_file=".env",

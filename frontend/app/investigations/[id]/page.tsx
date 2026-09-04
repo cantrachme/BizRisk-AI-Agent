@@ -52,6 +52,9 @@ export default function InvestigationPage() {
   const [pipelineCollapsed, setPipelineCollapsed] = useState(true);
   
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // Latest investigation snapshot, readable from the EventSource callbacks
+  // without re-subscribing the stream on every state change.
+  const detailRef = useRef<InvestigationDetail | null>(null);
 
   const checkBrowserSession = async (taskId: string) => {
     try {
@@ -126,6 +129,7 @@ export default function InvestigationPage() {
       
       const detailData = await api.getInvestigation(id);
       setDetail(detailData);
+      detailRef.current = detailData;
 
       // Fetch supplementary components in parallel
       const [evData, reportsData, evs] = await Promise.all([
@@ -212,6 +216,18 @@ export default function InvestigationPage() {
 
     const streamUrl = api.getEventsStreamUrl(id);
     const eventSource = new EventSource(streamUrl);
+    let closedByEffect = false;
+
+    const isTerminal = () => {
+      const s = (detailRef.current?.status || '').toUpperCase();
+      return s === 'COMPLETED' || s === 'FAILED';
+    };
+
+    eventSource.onopen = () => {
+      // Connection (re)established. Nothing to reset in UI state; log for
+      // observability so a dropped/restored stream is visible in dev tools.
+      console.debug("EventSource stream open:", streamUrl);
+    };
 
     eventSource.onmessage = (event) => {
       try {
@@ -222,7 +238,7 @@ export default function InvestigationPage() {
           }
           return [...prev, parsed];
         });
-        
+
         if (["TASK_COMPLETED", "TASK_BLOCKED", "TASK_FAILED", "WAITING_FOR_HUMAN", "HUMAN_ACTION_COMPLETED"].includes(parsed.event_type)) {
           fetchData(true);
         }
@@ -231,12 +247,25 @@ export default function InvestigationPage() {
       }
     };
 
-    eventSource.onerror = (err) => {
-      console.error("EventSource connection error:", err);
-      eventSource.close();
+    eventSource.onerror = () => {
+      if (closedByEffect) return;
+
+      // The backend closes the stream once the investigation reaches a terminal
+      // state. That surfaces here as an error even though nothing failed -- do
+      // not log it as an error and do not fight the (now-finished) stream.
+      if (isTerminal() || eventSource.readyState === EventSource.CLOSED) {
+        eventSource.close();
+        return;
+      }
+
+      // Otherwise the connection dropped while the investigation is still
+      // running. EventSource is already in CONNECTING and will retry on its own;
+      // leave it open so it reconnects. A fresh connection re-sends every event
+      // and onmessage de-dupes by id, so reconnection is idempotent.
     };
 
     return () => {
+      closedByEffect = true;
       eventSource.close();
     };
   }, [id]);

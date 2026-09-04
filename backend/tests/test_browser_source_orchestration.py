@@ -41,7 +41,7 @@ def make_test_state(raw_input: dict) -> InvestigationState:
 
 
 def test_1_four_configured_third_party_sources_are_all_planned():
-    """Test that all 4 configured third-party sources (InstaFinancials, QuickCompany, Tofler, ZaubaCorp) get individual tasks."""
+    """Test that all configured third-party directory sources (InstaFinancials, QuickCompany, Tofler, ZaubaCorp, Falcon Ebiz) get individual tasks."""
     state = make_test_state({
         "business_name": "Acme Global Technologies Limited",
         "cin": "L22210MH1995PLC084781",
@@ -54,13 +54,14 @@ def test_1_four_configured_third_party_sources_are_all_planned():
     tasks = planner.plan(state)
 
     tp_tasks = [t for t in tasks if t.task_type == "THIRD_PARTY_RESEARCH"]
-    assert len(tp_tasks) == 4, f"Expected 4 distinct THIRD_PARTY_RESEARCH tasks, got {len(tp_tasks)}"
+    assert len(tp_tasks) == 5, f"Expected 5 distinct THIRD_PARTY_RESEARCH tasks, got {len(tp_tasks)}"
 
     tp_sources = [t.preferred_sources[0] for t in tp_tasks]
     assert "instafinancials.com" in tp_sources
     assert "quickcompany.in" in tp_sources
     assert "tofler.in" in tp_sources
     assert "zaubacorp.com" in tp_sources
+    assert "falconebiz.com" in tp_sources
 
 
 def test_2_first_third_party_source_success_does_not_stop_remaining_sources():
@@ -89,11 +90,11 @@ def test_2_first_third_party_source_success_does_not_stop_remaining_sources():
         results.extend(res)
         attempted_sources.append(task.preferred_sources[0])
 
-    # All 4 sources must be attempted
-    assert len(attempted_sources) == 4
-    assert set(attempted_sources) == {"instafinancials.com", "quickcompany.in", "tofler.in", "zaubacorp.com"}
+    # All configured directory sources must be attempted
+    assert len(attempted_sources) == 5
+    assert set(attempted_sources) == {"instafinancials.com", "quickcompany.in", "tofler.in", "zaubacorp.com", "falconebiz.com"}
 
-    # Evidence from all 4 sources must be returned
+    # Evidence from the directory sources must be returned
     source_names = {r.source_name for r in results if r.confidence > 0}
     assert len(source_names) >= 3
 
@@ -124,8 +125,8 @@ def test_3_one_source_blocked_does_not_prevent_remaining_sources():
         executed_tasks.append(task.preferred_sources[0])
         successful_results.extend([r for r in res if r.confidence > 0])
 
-    # All 4 tasks were executed despite the first one being blocked
-    assert len(executed_tasks) == 4
+    # All 5 tasks were executed despite the first one being blocked
+    assert len(executed_tasks) == 5
     assert len(successful_results) > 0
     # InstaFinancials produced 0 confidence, while others produced valid evidence
     insta_res = [r for r in successful_results if "instafinancials" in r.source_name.lower()]
@@ -157,7 +158,7 @@ def test_4_one_source_error_does_not_prevent_remaining_sources():
         executed_tasks.append(task.preferred_sources[0])
         all_results.extend(res)
 
-    assert len(executed_tasks) == 4
+    assert len(executed_tasks) == 5
     # Valid evidence obtained from the non-failing sources
     successful_sources = {r.source_name for r in all_results if r.confidence > 0}
     assert "QuickCompany" not in successful_sources
@@ -469,7 +470,7 @@ def test_14_no_company_specific_hacks_arbitrary_unseeded_company():
     tasks = planner.plan(state)
     tp_tasks = [t for t in tasks if t.task_type == "THIRD_PARTY_RESEARCH"]
 
-    assert len(tp_tasks) == 4
+    assert len(tp_tasks) == 5
     for task in tp_tasks:
         src = task.preferred_sources[0]
         meta = source_registry.get_source(src)

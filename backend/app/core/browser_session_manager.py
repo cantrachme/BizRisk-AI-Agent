@@ -2,10 +2,13 @@ import uuid
 import threading
 import queue
 import concurrent.futures
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Optional
 from playwright.sync_api import sync_playwright
+
+logger = logging.getLogger("bizrisk.observability")
 
 class LiveBrowserSession:
     def __init__(self, investigation_id: uuid.UUID, task_id: str, source_name: str, timeout_seconds: int = 300):
@@ -45,6 +48,14 @@ class LiveBrowserSession:
             playwright = playwright_context.__enter__()
             from app.core.config import get_settings
             headless = get_settings().playwright_headless
+            # Surface the *effective* value so a stale process env var overriding
+            # .env (PLAYWRIGHT_HEADLESS) is visible in logs instead of silently
+            # launching a windowless browser during a live investigation.
+            logger.info(
+                "[BROWSER_LAUNCH] task=%s source=%s headless=%s (env override=%r)",
+                self.task_id, self.source_name, headless,
+                os.environ.get("PLAYWRIGHT_HEADLESS"),
+            )
             browser = playwright.chromium.launch(headless=headless)
             context = browser.new_context(
                 java_script_enabled=True,

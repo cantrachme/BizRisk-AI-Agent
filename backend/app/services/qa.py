@@ -231,9 +231,45 @@ def validate_report(
             "finding": f"Report risk score {report_score} does not match Risk Engine output {engine_score}."
         })
 
+    # The deterministic checks above are the ONLY authority for PASS/FAIL.
     status_str = "PASS" if not issues else "FAIL"
     import logging
     logging.getLogger("bizrisk.observability").error(f"[QA_ISSUES_DIAG] {issues}")
+
+    # Optional LLM QA reasoning — advisory only. It cannot change status_str and
+    # cannot touch the risk score; it only contributes human-readable notes.
+    advisory_notes: list = []
+    try:
+        from app.core.llm import run_structured_sync
+        from app.schemas.agent_outputs import QAReasoning
+
+        qa_context = {
+            "deterministic_status": status_str,
+            "deterministic_issues": issues,
+            "evidence_coverage": evidence_coverage,
+            "score_verified": score_verified,
+            "entity_verified": entity_verified,
+            "risk_score_readonly": report.get("overall_risk", {}).get("score"),
+            "risk_level_readonly": report.get("overall_risk", {}).get("level"),
+            "major_findings": report.get("major_findings") or [],
+        }
+        reasoning = run_structured_sync(
+            resolved_llm,
+            f"{prompt}\n\nReview this due-diligence report QA context and surface any additional "
+            f"evidence-grounding, contradiction, or wording concerns as short advisory notes. "
+            f"Do NOT decide PASS/FAIL and do NOT output a risk score — both are fixed.\n\n"
+            f"{json.dumps(qa_context, default=str)}",
+            QAReasoning,
+            system_instruction=(
+                "You are an advisory QA reviewer for business due-diligence reports. You never "
+                "decide PASS/FAIL and never produce or alter a numeric risk score. Output only "
+                "concise advisory notes about evidence grounding, contradictions, or unsafe wording."
+            ),
+        )
+        if reasoning is not None and reasoning.advisory_notes:
+            advisory_notes = [str(n) for n in reasoning.advisory_notes][:10]
+    except Exception:
+        advisory_notes = []
 
     # Update persisted report QA status for this specific version being evaluated
     latest_report = (
@@ -257,4 +293,5 @@ def validate_report(
         "evidence_coverage": evidence_coverage,
         "score_verified": score_verified,
         "entity_verified": entity_verified,
+        "advisory_notes": advisory_notes,
     }

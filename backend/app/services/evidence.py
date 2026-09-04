@@ -38,6 +38,42 @@ def is_evidence_fresh(retrieved_timestamp: datetime, field_name: str) -> bool:
     return delta.days < limit_days
 
 
+# Hard bounds applied just before persistence, independent of any extractor.
+_MAX_EMBEDDED_TEXT = 2000       # per embedded source_text / snippet
+_MAX_EVIDENCE_VALUE_CHARS = 20000  # per evidence row (serialised)
+
+
+def _bound_oversized_field_value(result: ResearchResult) -> None:
+    """
+    Prevent raw HTML / multi-KB page dumps from being persisted as evidence.
+    Bounds embedded ``source_text`` / ``snippet`` strings inside discovery
+    candidate lists, then hard-caps the serialised value. Mutates ``result`` in
+    place. Genuine bounded structured data is untouched.
+    """
+    val = result.field_value
+
+    if isinstance(val, list):
+        for item in val:
+            if isinstance(item, dict):
+                for k in ("source_text", "snippet", "text", "context", "raw_text"):
+                    if isinstance(item.get(k), str) and len(item[k]) > _MAX_EMBEDDED_TEXT:
+                        item[k] = item[k][:_MAX_EMBEDDED_TEXT] + " …[truncated]"
+
+    try:
+        serialized = val if isinstance(val, str) else json.dumps(val)
+    except (TypeError, ValueError):
+        return
+    if len(serialized) > _MAX_EVIDENCE_VALUE_CHARS:
+        if isinstance(val, str):
+            result.field_value = val[:_MAX_EVIDENCE_VALUE_CHARS] + " …[truncated]"
+        elif isinstance(val, list):
+            # keep the discovery metadata (names/confidence), drop the bulky text
+            for item in val:
+                if isinstance(item, dict):
+                    for k in ("source_text", "snippet", "text", "context", "raw_text"):
+                        item.pop(k, None)
+
+
 def save_research_results(
     db: Session,
     results: List[ResearchResult],
@@ -52,6 +88,8 @@ def save_research_results(
         validation = validate_research_result(result)
         if not validation.is_valid:
             continue
+
+        _bound_oversized_field_value(result)
 
         retrieved_at = result.retrieved_at or ""
         if retrieved_at.endswith("Z"):
