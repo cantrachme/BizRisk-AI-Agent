@@ -26,11 +26,34 @@ def generate_recommendation(score: int | None) -> str:
         return "Based on available public evidence, low risk was detected. Standard regulatory and business verification criteria were met."
 
 
+def _evidence_is_verified(ev) -> bool:
+    """A single evidence record counts as 'verified' for the source-level status
+    rollup only when its own ``verification_status`` says so. Raw ``confidence``
+    is a legacy fallback, used only when ``verification_status`` was never
+    recorded (``None`` / empty) -- an explicit ``UNVERIFIED`` never qualifies.
+    """
+    if str(getattr(ev, "field_value", "")).strip().upper() in {"NOT_FOUND", "UNAVAILABLE", "NONE", "BLOCKED"}:
+        return False
+    raw_status = getattr(ev, "verification_status", None)
+    status = str(raw_status).strip().upper() if raw_status is not None else ""
+    if status:
+        return status == "VERIFIED"
+    try:
+        return float(getattr(ev, "confidence", 0.0) or 0.0) >= 0.70
+    except (TypeError, ValueError):
+        return False
+
+
 def _classify_source_status(source_evidences: list) -> tuple[str, str]:
     if not source_evidences:
         return "UNAVAILABLE", "No research evidence retrieved from this source."
-    
-    # Check if any evidence is CAPTCHA / BLOCKED / UNAVAILABLE
+
+    # Best valid outcome first: if this source contributed any genuinely verified
+    # evidence, that is its status -- a stray blocked / captcha marker in another
+    # field's value can never demote it.
+    if any(_evidence_is_verified(ev) for ev in source_evidences):
+        return "VERIFIED", "Evidence obtained and verified against target entity."
+
     has_captcha = any("CAPTCHA" in str(ev.field_value).upper() or "CAPTCHA" in str(ev.field_name).upper() for ev in source_evidences)
     if has_captcha:
         return "CAPTCHA_REQUIRED", "Source requires human verification or CAPTCHA challenge."
@@ -40,14 +63,55 @@ def _classify_source_status(source_evidences: list) -> tuple[str, str]:
         return "BLOCKED", "Source access was blocked or timed out."
 
     has_not_found = any(str(ev.field_value).strip().upper() in {"NOT_FOUND", "NONE"} for ev in source_evidences)
-    has_verified = any(ev.confidence >= 0.70 and str(ev.field_value).strip().upper() not in {"NOT_FOUND", "UNAVAILABLE", "NONE", "BLOCKED"} for ev in source_evidences)
-
-    if has_verified:
-        return "VERIFIED", "Evidence obtained and verified against target entity."
-    elif has_not_found:
+    if has_not_found:
         return "NOT_FOUND", "Target entity record not found in this registry."
-    
+
     return "UNAVAILABLE", "Source information unavailable or unverified."
+
+
+# Rank of a single browser attempt outcome, best (highest) to worst. Used to roll
+# every stored attempt for one source up to a single "final source status" that
+# always reflects the best outcome -- a later blocked/failed attempt can never
+# demote an earlier SUCCESS, and a SUCCESS on a fallback URL is never demoted
+# because the primary URL failed.
+_ATTEMPT_STATUS_RANK = {
+    "SUCCESS": 6,
+    "NO_DATA": 5, "NO_RESULTS": 5, "NOT_FOUND": 5,
+    "REJECTED": 4, "ENTITY_MISMATCH": 4, "UNRELATED": 4,
+    "IRRELEVANT_CONTENT": 3, "IRRELEVANT_SECTOR": 3, "IRRELEVANT": 3,
+    "CAPTCHA_REQUIRED": 2, "BLOCKED": 2, "BLOCKED_OR_ERROR": 2,
+    "ERROR": 1, "EMPTY_RESPONSE": 1,
+}
+
+
+def derive_browser_source_statuses(sessions) -> dict[str, dict[str, Any]]:
+    """
+    Roll every stored browser attempt up to one final status per source
+    (``BrowserSession.domain``): the best outcome across all of that source's
+    attempts. Individual attempt rows are still kept for diagnostics -- this is
+    only a derived rollup and never rewrites them.
+    """
+    by_domain: dict[str, list[str]] = {}
+    for s in sessions:
+        domain = (getattr(s, "domain", None)
+                  if not isinstance(s, dict) else s.get("domain")) or ""
+        status = (getattr(s, "status", None)
+                  if not isinstance(s, dict) else s.get("status")) or ""
+        domain = str(domain).strip()
+        status = str(status).strip().upper()
+        if not domain:
+            continue
+        by_domain.setdefault(domain, []).append(status)
+
+    out: dict[str, dict[str, Any]] = {}
+    for domain, statuses in by_domain.items():
+        best = max(statuses, key=lambda st: _ATTEMPT_STATUS_RANK.get(st, 0))
+        out[domain] = {
+            "status": best,
+            "attempts": len(statuses),
+            "attempt_statuses": statuses,
+        }
+    return out
 
 
 def build_verification_summary(evidences: list) -> dict[str, dict[str, str]]:
@@ -60,18 +124,41 @@ def build_verification_summary(evidences: list) -> dict[str, dict[str, str]]:
         "general_web": [],
     }
 
+    from app.research.source_registry import SourceType, source_registry
+
     for ev in evidences:
+        # candidate_entities rows are discovery *leads* (produced by the
+        # discovery agent and by general-web scans), never a source's
+        # verification of a fact about the target. Counting them would inflate a
+        # source and, via the legacy confidence fallback, could mark it VERIFIED
+        # without any genuinely verified evidence. Excluded here exactly as the
+        # Risk Engine already excludes them from scoring.
+        if getattr(ev, "field_name", None) == "candidate_entities":
+            continue
         src = (ev.source_name or "").lower()
+        # A source registered in the source registry as a THIRD_PARTY_REGISTRY
+        # is categorised as third-party regardless of its display name, so newly
+        # registered directory sources need no keyword here.
+        _meta = source_registry.get_source(ev.source_name or "")
+        _is_registered_tp = bool(
+            _meta and getattr(_meta, "source_type", None) == SourceType.THIRD_PARTY_REGISTRY
+        )
         if "gst" in src:
             by_source_category["gst"].append(ev)
         elif "mca" in src:
             by_source_category["mca"].append(ev)
         elif "epf" in src or "epfo" in src:
             by_source_category["epfo"].append(ev)
+        # Third-party registries must be matched BEFORE the generic
+        # "company"/"website" check, otherwise e.g. "QuickCompany" (contains
+        # "company") is misfiled as the official website.
+        elif _is_registered_tp or any(k in src for k in [
+            "third_party", "third-party", "third party", "zauba", "tofler",
+            "quickcompany", "quick company", "instafinancial", "registry", "directory",
+        ]):
+            by_source_category["third_party"].append(ev)
         elif "website" in src or "company" in src:
             by_source_category["official_website"].append(ev)
-        elif any(k in src for k in ["third_party", "zauba", "tofler", "quick", "insta"]):
-            by_source_category["third_party"].append(ev)
         else:
             by_source_category["general_web"].append(ev)
 
@@ -85,6 +172,112 @@ def build_verification_summary(evidences: list) -> dict[str, dict[str, str]]:
         }
 
     return summary
+
+
+_SOURCE_CATEGORY_LABELS = {
+    "gst": "GST Portal",
+    "mca": "MCA Portal",
+    "epfo": "EPFO Portal",
+    "official_website": "Company Website",
+    "third_party": "Third-Party Registry",
+    "general_web": "General Web",
+}
+
+_LIMITATION_STATUSES = {"UNAVAILABLE", "BLOCKED", "CAPTCHA_REQUIRED", "NOT_FOUND"}
+
+
+def _attempt_domain_to_category(domain: str | None) -> str:
+    d = (domain or "").lower()
+    if "gst" in d:
+        return "gst"
+    if "mca" in d:
+        return "mca"
+    if "epf" in d:
+        return "epfo"
+    if "company_website" in d or "website" in d:
+        return "official_website"
+    if any(k in d for k in ("third_party", "zauba", "tofler", "quick", "insta")):
+        return "third_party"
+    return "general_web"
+
+
+_SOURCE_AUTHORITY_RANK = [
+    ("gst", ("gst",)),
+    ("mca", ("mca",)),
+    ("epfo", ("epf", "epfo")),
+    ("official_website", ("company website", "official website")),
+    ("third_party", ("zauba", "tofler", "quickcompany", "quick company", "instafinancials", "third-party", "third party", "registry")),
+    ("general_web", ("general web", "web")),
+]
+
+
+def _primary_source(evidences: list) -> str | None:
+    """
+    Global "source of record", derived ONLY from finally-persisted, usable
+    evidence: the highest-authority source that contributed at least one
+    verified/usable field, breaking ties by confidence then name. Never derived
+    from browser attempt history, so it cannot contradict field-level evidence.
+    """
+    best = None  # (authority_rank, -confidence, source_name)
+    for ev in evidences:
+        val = str(ev.field_value).strip().upper()
+        conf = ev.confidence or 0.0
+        if conf < 0.50 or val in {"NOT_FOUND", "UNAVAILABLE", "SOURCE_UNAVAILABLE", "BLOCKED", "TIMEOUT", "NONE", "ERROR"}:
+            continue
+        src = str(ev.source_name or "").strip()
+        low = src.lower()
+        rank = len(_SOURCE_AUTHORITY_RANK)
+        for i, (_cat, needles) in enumerate(_SOURCE_AUTHORITY_RANK):
+            if any(n in low for n in needles):
+                rank = i
+                break
+        key = (rank, -float(conf), low)
+        if best is None or key < best[0]:
+            best = (key, src)
+    return best[1] if best else None
+
+
+def _build_source_limitations(db, investigation_id, verification_summary: dict) -> list[dict[str, Any]]:
+    """
+    Emit at most one limitation per *logical source*, derived from the final
+    per-source status (verification_summary, itself built from persisted
+    evidence). A limitation is reported only when the source produced no usable
+    evidence AND at least one meaningful attempt was made for it. Earlier failed
+    attempts for a source that ultimately succeeded remain only in the
+    BrowserSession attempt diagnostics.
+    """
+    from app.models.browser_session import BrowserSession
+
+    attempted_categories: set[str] = set()
+    try:
+        rows = (
+            db.query(BrowserSession)
+            .filter(BrowserSession.investigation_id == investigation_id)
+            .all()
+        )
+        for bs in rows:
+            attempted_categories.add(_attempt_domain_to_category(bs.domain))
+    except Exception:
+        attempted_categories = set()
+
+    limitations: list[dict[str, Any]] = []
+    for cat, data in verification_summary.items():
+        status = (data or {}).get("status")
+        if status not in _LIMITATION_STATUSES:
+            continue
+        if cat not in attempted_categories:
+            continue
+        label = _SOURCE_CATEGORY_LABELS.get(cat, cat)
+        limitations.append({
+            "source": label,
+            "field": "source_access",
+            "status": status,
+            "reason": (
+                f"{label} was attempted but no usable target-entity evidence "
+                f"could be obtained ({status})."
+            ),
+        })
+    return limitations
 
 
 def normalize_address_for_reconciliation(addr: str | None) -> str:
@@ -333,37 +526,24 @@ def generate_investigation_report(
                 "confidence": ev.confidence,
             })
 
-        # Collect source limitations and unverified info
-        source_limitations = []
+        # Collect source limitations and unverified info.
+        #
+        # Source status is derived ONLY from finally-persisted evidence
+        # (verification_summary). Raw browser attempt rows are diagnostics and
+        # never drive final source status: a source that failed once and later
+        # succeeded is VERIFIED, not limited. Limitations are emitted at most
+        # once per logical source, and only when that source produced no usable
+        # evidence *and* was actually attempted.
         unverified_info = []
         reason_codes = list(analysis.get("reason_codes") or [])
-
-        from app.models.browser_session import BrowserSession
-        browser_sessions = (
-            db.query(BrowserSession)
-            .filter(BrowserSession.investigation_id == investigation_id)
-            .all()
-        )
-        for bs in browser_sessions:
-            if bs.status in {"BLOCKED_OR_ERROR", "ERROR", "TIMEOUT", "REJECTED", "IRRELEVANT_CONTENT"}:
-                source_limitations.append({
-                    "source": bs.domain or "External Source",
-                    "field": "source_access",
-                    "status": bs.status,
-                    "reason": f"External source {bs.domain} was inaccessible, blocked, or timed out during research.",
-                })
 
         for ev in sorted_evidences:
             val = ev.field_value
             val_str = str(val).strip().upper()
-            if val_str in {"UNAVAILABLE", "SOURCE_UNAVAILABLE", "BLOCKED", "TIMEOUT"}:
-                source_limitations.append({
-                    "source": ev.source_name,
-                    "field": ev.field_name,
-                    "status": val_str,
-                    "reason": f"External source {ev.source_name} was inaccessible or blocked during lookup.",
-                })
-            elif ev.confidence < 0.50 and val_str not in {"NOT_FOUND", "NONE"}:
+            if (
+                ev.confidence < 0.50
+                and val_str not in {"NOT_FOUND", "NONE", "UNAVAILABLE", "SOURCE_UNAVAILABLE", "BLOCKED", "TIMEOUT"}
+            ):
                 unverified_info.append({
                     "field": ev.field_name,
                     "value": val,
@@ -372,6 +552,22 @@ def generate_investigation_report(
 
         verification_summary = build_verification_summary(sorted_evidences)
         cross_source_consistency = build_cross_source_consistency(sorted_evidences, entity)
+
+        source_limitations = _build_source_limitations(db, investigation_id, verification_summary)
+
+        # Per-source FINAL attempt status = best outcome across every stored
+        # browser attempt for that source (diagnostic only; does not feed risk,
+        # assessment, or verification_summary).
+        from app.models.browser_session import BrowserSession
+        try:
+            _bs_rows = (
+                db.query(BrowserSession)
+                .filter(BrowserSession.investigation_id == investigation_id)
+                .all()
+            )
+        except Exception:
+            _bs_rows = []
+        source_attempt_status = derive_browser_source_statuses(_bs_rows)
 
         is_insufficient = analysis.get("insufficient_evidence", False) or analysis["overall_risk"]["score"] is None
         if is_insufficient:
@@ -399,8 +595,10 @@ def generate_investigation_report(
             "assessment_status": "INSUFFICIENT_EVIDENCE" if is_insufficient else "COMPLETED",
             "reason_codes": reason_codes,
             "verification_summary": verification_summary,
+            "primary_source": _primary_source(sorted_evidences),
             "cross_source_consistency": cross_source_consistency,
             "source_limitations": source_limitations,
+            "source_attempt_status": source_attempt_status,
             "category_scores": analysis["category_scores"],
             "major_findings": major_findings,
             "positive_findings": [],
@@ -423,6 +621,68 @@ def generate_investigation_report(
                 "generated_at": datetime.now(timezone.utc).isoformat(),
             }
         }
+
+        # 7b. Optional LLM narrative (additive, non-authoritative).
+        #     The deterministic Risk Engine score/level above are the sole
+        #     authority; they are handed to the LLM read-only and the narrative
+        #     schema has no score field.
+        report_dict["narrative"] = ""
+        report_dict["cross_source_consistency_narrative"] = ""
+        try:
+            from app.core.llm import run_structured_sync
+            from app.schemas.agent_outputs import ReportNarrative
+
+            narrative_context = {
+                "resolved_entity": {
+                    k: entity.get(k)
+                    for k in ("business_name", "name", "gstin", "cin", "website", "state")
+                    if entity.get(k)
+                },
+                "entity_confidence": entity_confidence,
+                "assessment_status": report_dict["assessment_status"],
+                # read-only: the LLM must not recompute or override these
+                "risk_score_readonly": analysis["overall_risk"]["score"],
+                "risk_level_readonly": analysis["overall_risk"]["level"],
+                "category_scores_readonly": analysis["category_scores"],
+                "major_findings": [
+                    {
+                        "code": f.get("code"),
+                        "severity": f.get("severity"),
+                        "description": f.get("description"),
+                    }
+                    for f in major_findings
+                ],
+                "cross_source_consistency": cross_source_consistency,
+                "reason_codes": reason_codes,
+            }
+            narrative_out = run_structured_sync(
+                resolved_llm,
+                f"{prompt}\n\nWrite a concise, evidence-grounded due-diligence narrative for the "
+                f"following investigation. Do NOT output any risk score or risk level; they are "
+                f"provided read-only for context only.\n\n{json.dumps(narrative_context, default=str)}",
+                ReportNarrative,
+                system_instruction=(
+                    "You write neutral business due-diligence report narratives. Never state or "
+                    "imply a company is fraudulent. Never output a numeric risk score or risk "
+                    "level — those are computed deterministically elsewhere and given to you "
+                    "read-only. Ground every statement in the supplied findings and evidence."
+                ),
+            )
+            if narrative_out is not None:
+                report_dict["narrative"] = narrative_out.narrative_summary or ""
+                report_dict["cross_source_consistency_narrative"] = (
+                    narrative_out.cross_source_consistency_summary or ""
+                )
+                if narrative_out.recommended_verification_focus:
+                    report_dict["meta"]["recommended_verification_focus"] = list(
+                        narrative_out.recommended_verification_focus
+                    )
+        except Exception:
+            # Narrative is best-effort; never block report generation.
+            report_dict["narrative"] = report_dict.get("narrative") or ""
+            report_dict["cross_source_consistency_narrative"] = (
+                report_dict.get("cross_source_consistency_narrative") or ""
+            )
 
         # 8. Persist the report
         from app.models.report import Report

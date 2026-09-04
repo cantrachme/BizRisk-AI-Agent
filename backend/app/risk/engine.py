@@ -11,6 +11,36 @@ from app.risk.rules import normalize_evidence, run_all_rules
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
 RISK_RULE_VERSION = "1.0.0"
 
+# Confidence at or above which a factual evidence record is treated as
+# "verified" for the purpose of deciding whether the investigation has
+# sufficient evidence to produce a numeric risk score. Mirrors the "verified"
+# bar used by the report source-status classifier and the browser research
+# agent. This is an evidence-sufficiency gate, not a risk score threshold.
+VERIFIED_EVIDENCE_CONFIDENCE = 0.70
+
+# Fields that only record whether a source page loaded / a record was found at
+# a URL -- never a fact about the company itself. app/agents/browser.py
+# extracts all three through the exact same branch ("Evidence page
+# successfully retrieved" -> AVAILABLE, else UNAVAILABLE); none of them carries
+# any name, status-of-registration, address, or identifier information. A
+# single field like this being high-confidence or even explicitly VERIFIED
+# only means a page was reachable, not that anything substantive about the
+# company was confirmed, so it must never by itself satisfy the
+# evidence-sufficiency gate. Generic and structural -- no company-specific
+# values, and this does not affect scoring/rules once sufficiency is
+# otherwise established.
+LOW_INFORMATION_AVAILABILITY_FIELDS = {"mca_status", "epfo_status", "website_status"}
+
+# verification_status values meaning the research layer already determined a
+# record does not describe the target entity (wrong-entity page, unrelated
+# search/navigation content, explicitly rejected). Production persistence
+# (app/validation/research.py) already filters these before they reach the
+# database, but the Risk Engine must not depend on that -- if called directly,
+# or if upstream filtering ever regresses, contaminated evidence must still
+# never participate in scoring. Defense-in-depth only: this does not change
+# what gets persisted, just what this function will score.
+EXCLUDED_VERIFICATION_STATUSES = {"REJECTED", "ENTITY_MISMATCH", "UNRELATED"}
+
 
 class InsufficientEvidenceError(ValueError):
     """Exception raised when the minimum evidence requirements are not met."""
@@ -116,6 +146,8 @@ def calculate_risk_analysis(
             continue
         if getattr(ev, "verification_status", None) in {"SOURCE_UNAVAILABLE", "NOT_FOUND"}:
             continue
+        if str(getattr(ev, "verification_status", "") or "").strip().upper() in EXCLUDED_VERIFICATION_STATUSES:
+            continue
         seen_ids.add(evidence_id)
         validated_evs.append(ev)
 
@@ -126,10 +158,39 @@ def calculate_risk_analysis(
             vval_repr = vval_repr[:147] + "..."
         print(f"[DIAGNOSTIC] Validated Record {idx}: ID={vev.id} | Field={vev.field_name} | Value={vval_repr} | Source={vev.source_name} | Confidence={vev.confidence}", flush=True)
 
-    # Determine whether sufficient evidence exists before running deterministic rules
+    # Determine whether sufficient evidence exists before running deterministic rules.
+    #
+    # A numeric risk score must never rest on evidence that was not actually
+    # verified. "Sufficient" therefore means: at least one factual (non
+    # candidate_entities) record that is either high-confidence
+    # (>= VERIFIED_EVIDENCE_CONFIDENCE, matching the report/browser "verified"
+    # bar) or was explicitly marked verification_status == "VERIFIED" upstream.
+    # candidate_entities are discovery leads, never sufficient on their own.
+    #
+    # That verified record must also be substantive: a page-availability-only
+    # signal (LOW_INFORMATION_AVAILABILITY_FIELDS -- mca_status/epfo_status/
+    # website_status) confirms a source loaded, not any fact about the company,
+    # so it cannot by itself clear the gate no matter how high its confidence
+    # is -- confidence alone must not make weak evidence sufficient. Any other
+    # factual field (company_status, legal_name, gst_status, addresses,
+    # identifiers, activity, dates, ...) is substantive and clears the gate on
+    # its own, so a clearly adverse COMPANY_STATUS_ADVERSE finding still scores
+    # even when it is the only evidence available.
+    # Rule evaluation below is unchanged and still runs over the full
+    # validated_evs set, so scoring/signal behaviour is preserved whenever
+    # sufficient evidence exists.
     non_candidate_evs = [e for e in validated_evs if e.field_name != "candidate_entities"]
-    insufficient_evidence = len(non_candidate_evs) == 0
-    print(f"[DIAGNOSTIC] Validated Non-Candidate Evidence Count: {len(non_candidate_evs)} | Insufficient: {insufficient_evidence}", flush=True)
+    verified_factual_evs = [
+        e for e in non_candidate_evs
+        if float(e.confidence) >= VERIFIED_EVIDENCE_CONFIDENCE
+        or str(getattr(e, "verification_status", "") or "").strip().upper() == "VERIFIED"
+    ]
+    substantive_verified_evs = [
+        e for e in verified_factual_evs
+        if e.field_name not in LOW_INFORMATION_AVAILABILITY_FIELDS
+    ]
+    insufficient_evidence = len(substantive_verified_evs) == 0
+    print(f"[DIAGNOSTIC] Validated Non-Candidate Evidence Count: {len(non_candidate_evs)} | Verified Factual Count: {len(verified_factual_evs)} | Substantive Verified Count: {len(substantive_verified_evs)} | Insufficient: {insufficient_evidence}", flush=True)
 
     if insufficient_evidence:
         overall_score = None

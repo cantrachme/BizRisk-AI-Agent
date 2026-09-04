@@ -1,9 +1,35 @@
 from app.entity_resolution.matcher import has_exact_match
-from app.entity_resolution.scoring import score_entities
+from app.entity_resolution.scoring import score_entities, _tokenize_name
 from app.entity_resolution.normalization import normalize_entity
 
 EXACT_MATCH_CONFIDENCE = 1.0
+# Default acceptance threshold. The effective value is read from
+# Settings.entity_resolution_threshold at call time so it stays configurable.
 RESOLUTION_THRESHOLD = 0.75
+
+# Statutory identifiers whose disagreement means "different legal entity".
+_STRONG_IDENTIFIERS = ("gstin", "cin")
+# Non-name identity attributes that can corroborate a name-based similarity match.
+_CORROBORATING_ATTRS = ("gstin", "cin", "website", "location", "address")
+
+
+def _resolution_threshold() -> float:
+    try:
+        from app.core.config import get_settings
+
+        return float(get_settings().entity_resolution_threshold)
+    except Exception:
+        return RESOLUTION_THRESHOLD
+
+
+def _conflicts_on_strong_identifier(normalized_target: dict, candidate: dict) -> bool:
+    """True when target and candidate carry the same kind of statutory
+    identifier (GSTIN/CIN) with different values."""
+    nc = normalize_entity(candidate)
+    return any(
+        normalized_target.get(k) and nc.get(k) and normalized_target[k] != nc[k]
+        for k in _STRONG_IDENTIFIERS
+    )
 
 
 def resolve_entity(
@@ -12,6 +38,7 @@ def resolve_entity(
     llm=None,
     prompt_version: str = "v1",
 ) -> dict:
+    resolution_threshold = _resolution_threshold()
     normalized_target = normalize_entity(target) if target else {}
 
     if not candidates:
@@ -46,6 +73,16 @@ def resolve_entity(
         candidate
         for candidate in candidates
         if isinstance(candidate, dict) and has_exact_match(target, candidate)
+    ]
+
+    # GAP A: a matching identifier (incl. website) must never override a
+    # *conflicting* statutory identifier on the same candidate. Such candidates
+    # are not eligible for an EXACT/MATCH; the investigation falls through to the
+    # CONFLICTING_IDENTITY path below.
+    exact_matches = [
+        candidate
+        for candidate in exact_matches
+        if not _conflicts_on_strong_identifier(normalized_target, candidate)
     ]
 
     if exact_matches:
@@ -88,8 +125,35 @@ def resolve_entity(
         key=lambda item: item[1],
     )
 
-    if best_score >= RESOLUTION_THRESHOLD:
-        reasons = [f"Multi-attribute similarity score {best_score:.2f} >= threshold {RESOLUTION_THRESHOLD}"]
+    if best_score >= resolution_threshold:
+        # GAP B: a similarity match must not rest on a single non-distinctive
+        # name token when the name is the only identity signal (no other
+        # corroborating identity attribute agrees). Reuses the same name
+        # tokeniser as scoring; no company-specific lists.
+        norm_best = normalize_entity(best_candidate)
+        has_corroboration = any(
+            normalized_target.get(k) and norm_best.get(k) and normalized_target[k] == norm_best[k]
+            for k in _CORROBORATING_ATTRS
+        )
+        target_name = normalized_target.get("name") or normalized_target.get("business_name") or ""
+        if not has_corroboration and len(_tokenize_name(target_name)) < 2:
+            # `confidence` carries the best candidate's raw similarity (as the
+            # sibling NO_MATCH branch does); `matched` / `match_type` are the
+            # signal that identity could not be resolved.
+            return {
+                "entity": None,
+                "confidence": best_score,
+                "matched": False,
+                "match_type": "INSUFFICIENT_IDENTITY",
+                "resolution_status": "ENTITY_UNRESOLVED",
+                "match_reasons": [
+                    "Name is the only identity signal and is not distinctive enough "
+                    "to resolve the entity without corroborating attributes."
+                ],
+                "conflicting_identifiers": conflicts,
+            }
+
+        reasons = [f"Multi-attribute similarity score {best_score:.2f} >= threshold {resolution_threshold}"]
         return {
             "entity": best_candidate,
             "confidence": best_score,
@@ -117,6 +181,6 @@ def resolve_entity(
         "matched": False,
         "match_type": "NO_MATCH",
         "resolution_status": "ENTITY_UNRESOLVED",
-        "match_reasons": [f"Best candidate match score {best_score:.2f} below threshold {RESOLUTION_THRESHOLD}"],
+        "match_reasons": [f"Best candidate match score {best_score:.2f} below threshold {resolution_threshold}"],
         "conflicting_identifiers": conflicts,
     }

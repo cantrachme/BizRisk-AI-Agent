@@ -5,6 +5,12 @@ rules:
     severity: "HIGH"
     description: "GST registration appears inactive."
 
+  COMPANY_STATUS_ADVERSE:
+    weight: 35
+    category: "COMPLIANCE"
+    severity: "HIGH"
+    description: "Company registration status indicates the entity is struck off, under liquidation, dissolved, dormant, or otherwise not in good standing."
+
   LEGAL_NAME_CONFLICT:
     weight: 25
     category: "IDENTITY"

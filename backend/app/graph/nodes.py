@@ -24,6 +24,82 @@ def SessionLocal():
 
 _sentinel = object()
 
+_PLACEHOLDER_EVIDENCE_VALUES = {
+    "NOT_FOUND", "UNAVAILABLE", "SOURCE_UNAVAILABLE", "BLOCKED", "TIMEOUT", "NONE", "ERROR",
+}
+
+
+def _reconcile_selected_as_evidence(db, investigation_id) -> None:
+    """
+    Make `selected_as_evidence` on the BrowserSession attempt rows reflect the
+    FINAL persisted evidence rather than per-attempt page-fetch success.
+
+    An attempt is `selected_as_evidence` only if it SUCCEEDED and its
+    (source_name, url) actually produced a persisted, usable Evidence row.
+    Earlier failed/superseded attempts are flipped back to False. This keeps any
+    consumer of the attempt diagnostics (e.g. the "Final Selected Source" UI
+    widget) consistent with the field-level evidence.
+    """
+    import json as _json
+    from app.models.evidence import Evidence
+    from app.models.browser_session import BrowserSession
+
+    try:
+        evs = db.query(Evidence).filter(Evidence.investigation_id == investigation_id).all()
+    except Exception:
+        return
+
+    evidence_pairs: set[tuple[str, str]] = set()
+    evidence_sources: set[str] = set()
+    for ev in evs:
+        val = str(ev.field_value).strip().upper()
+        if ev.confidence is None or ev.confidence <= 0.0 or val in _PLACEHOLDER_EVIDENCE_VALUES:
+            continue
+        sn = str(ev.source_name or "").strip().lower()
+        if not sn:
+            continue
+        evidence_sources.add(sn)
+        evidence_pairs.add((sn, str(ev.source_url or "").strip()))
+
+    try:
+        rows = db.query(BrowserSession).filter(
+            BrowserSession.investigation_id == investigation_id
+        ).all()
+    except Exception:
+        return
+
+    changed = False
+    for bs in rows:
+        try:
+            meta = _json.loads(bs.failure_reason) if bs.failure_reason else {}
+        except Exception:
+            continue
+        if not isinstance(meta, dict):
+            continue
+        sn = str(meta.get("source_name") or "").strip().lower()
+        url = str(meta.get("url") or "").strip()
+        source_has_evidence = sn != "" and ((sn, url) in evidence_pairs or sn in evidence_sources)
+
+        # A page-fetch that opened but yielded no persisted usable evidence for
+        # its source (e.g. a bare government/registry landing page) must not read
+        # as SUCCESS. Downgrade it to NO_DATA. Attempts whose source DID persist
+        # evidence keep SUCCESS even if this particular URL was not the winner.
+        if bs.status == "SUCCESS" and not source_has_evidence:
+            bs.status = "NO_DATA"
+            changed = True
+
+        is_selected = bs.status == "SUCCESS" and source_has_evidence
+        if bool(meta.get("selected_as_evidence")) != is_selected:
+            meta["selected_as_evidence"] = is_selected
+            bs.failure_reason = _json.dumps(meta)
+            changed = True
+
+    if changed:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
 def update_investigation_in_db(
     investigation_id_str: str | None,
     current_node: str,
@@ -825,6 +901,7 @@ def browser_node(state: InvestigationState) -> dict:
                 with db_lock:
                     with SessionLocal() as db:
                         save_research_results(db, new_results, investigation_id_val)
+                        _reconcile_selected_as_evidence(db, investigation_id_val)
             except ValueError:
                 pass
 
@@ -1393,10 +1470,13 @@ def qa_node(state: InvestigationState) -> dict:
         if qa_result["status"] == "FAIL":
             qa_loop_count += 1
 
+        from app.core.config import get_settings
+        max_qa_loops = get_settings().max_qa_loops
+
         if qa_result["status"] == "PASS":
             status = "COMPLETED"
             completed = True
-        elif qa_loop_count >= 2:
+        elif qa_loop_count >= max_qa_loops:
             status = "FAILED"
             completed = True
         else:

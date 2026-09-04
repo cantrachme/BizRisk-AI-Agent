@@ -186,8 +186,67 @@ def evaluate_gst_inactive(evidences: List[NormalizedEvidence]) -> Optional[Dict[
     return None
 
 
+# Company-registry status values that unambiguously mean the company itself is
+# no longer a going concern in normal active operation. Generic, structural
+# vocabulary only -- no company names.
+#
+# Deliberately EXCLUDES "cancelled" / "suspended" / "inactive": the browser
+# company-status extractor (app/agents/browser.py, field_name in
+# {"company_status", "registration_status"}) scans for those same words using a
+# keyword list borrowed from GST-style status wording, so a "company_status"
+# value of "cancelled"/"suspended"/"inactive" is not reliably a company-level
+# registry finding -- it may reflect GST/sub-registration wording on the page.
+# This rule never infers company-level risk from that ambiguous vocabulary;
+# GST-specific status is evaluate_gst_inactive's exclusive concern.
+_ADVERSE_COMPANY_STATUSES = {
+    "struck off", "strike off", "strikeoff",
+    "under liquidation", "in liquidation", "liquidated",
+    "dissolved",
+    "deregistered", "de-registered",
+    "wound up", "winding up",
+    "defunct",
+    "dormant",
+}
+
+
+def evaluate_company_status_adverse(evidences: List[NormalizedEvidence]) -> Optional[Dict[str, Any]]:
+    # "registration_status" is treated as company-level registration status,
+    # not a GST/sub-registration concept: app/agents/browser.py and
+    # app/research/mca.py both extract it via the exact same code path as
+    # "company_status" (MCA-style company registration status).
+    for ev in evidences:
+        if ev.field_name in ("company_status", "registration_status"):
+            # Normalize case and collapse/trim whitespace only -- no other
+            # rewriting -- so "Struck Off", "STRUCK  OFF", " struck off " etc.
+            # all match the same canonical entry.
+            val = re.sub(r"\s+", " ", str(ev.field_value).strip().lower())
+            if val in _ADVERSE_COMPANY_STATUSES:
+                return {
+                    "triggered": True,
+                    "evidence_ids": [ev.id],
+                    "confidence": ev.confidence,
+                    "description": f"Company registration status is adverse: '{ev.field_value}' from source '{ev.source_name}'.",
+                }
+    return None
+
+
+# Company identity-name fields treated as describing the SAME entity name
+# across sources, not distinct concepts. app/agents/browser.py extracts all
+# five through the exact same regex/cleaning/validation branch (there is no
+# per-field distinction in how the value is derived), and
+# app/validation/research.py's LEGAL_NAME_FIELDS applies the identical
+# is_valid_legal_name semantic check to all five -- confirming the pipeline
+# does not treat "trade_name" or "establishment_name" as a legitimately
+# different identity (e.g. a distinct DBA/brand name) from "legal_name".
+# Deliberately EXCLUDES unrelated fields (addresses, business_activity,
+# status/availability fields, identifiers) -- those are never name comparisons.
+_IDENTITY_NAME_FIELDS = {
+    "legal_name", "business_name", "company_name", "establishment_name", "trade_name",
+}
+
+
 def evaluate_legal_name_conflict(evidences: List[NormalizedEvidence]) -> Optional[Dict[str, Any]]:
-    name_evidences = [ev for ev in evidences if ev.field_name in ["legal_name", "business_name"]]
+    name_evidences = [ev for ev in evidences if ev.field_name in _IDENTITY_NAME_FIELDS]
     if len(name_evidences) < 2:
         return None
 
@@ -297,6 +356,10 @@ def run_all_rules(evidences: List[NormalizedEvidence]) -> Dict[str, Dict[str, An
     gst_res = evaluate_gst_inactive(evidences)
     if gst_res:
         results["GST_INACTIVE"] = gst_res
+
+    status_res = evaluate_company_status_adverse(evidences)
+    if status_res:
+        results["COMPANY_STATUS_ADVERSE"] = status_res
 
     name_res = evaluate_legal_name_conflict(evidences)
     if name_res:
